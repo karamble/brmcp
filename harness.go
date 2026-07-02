@@ -86,6 +86,7 @@ type Harness struct {
 	allowed map[string]bool
 	servers map[string]*mcp.Server // per peer: tool closures need the caller
 	buckets map[string]*bucket
+	calls   map[string]*callRecord
 	tools   []toolReg
 }
 
@@ -114,6 +115,7 @@ func NewHarness(impl *mcp.Implementation, cfg HarnessConfig) (*Harness, error) {
 		allowed: make(map[string]bool),
 		servers: make(map[string]*mcp.Server),
 		buckets: make(map[string]*bucket),
+		calls:   make(map[string]*callRecord),
 	}
 	if h.billing == nil {
 		h.billing = ledger
@@ -200,6 +202,63 @@ func AddTool[In any](h *Harness, tool *mcp.Tool, priceAtoms int64,
 // arguments; the authoritative quote arrives in the payment_required error.
 const PricingMetaKey = "brmcp/pricing"
 
+// CallKeyMetaKey is the caller-supplied idempotency key in a tools/call
+// _meta. A transport retry of the same logical call reuses the key; the
+// harness executes and charges once and replays the recorded outcome to
+// duplicates, so a lost reply can never double-bill.
+const CallKeyMetaKey = "brmcp/callKey"
+
+// callRecord tracks one keyed call from claim to completion so duplicates
+// wait for and share the original's outcome.
+type callRecord struct {
+	done    chan struct{}
+	result  *mcp.CallToolResult
+	out     any
+	err     error
+	expires time.Time
+}
+
+// callKeyTTL bounds how long a completed outcome stays replayable; a
+// duplicate arriving later re-executes (and re-charges) like a fresh call.
+const callKeyTTL = 30 * time.Minute
+
+// claimCall registers key and reports whether it was already claimed. The
+// caller that gets dup=false owns execution and must finish the record via
+// completeCall or abandon it via releaseCall.
+func (h *Harness) claimCall(key string) (*callRecord, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now()
+	for k, c := range h.calls {
+		if !c.expires.IsZero() && now.After(c.expires) {
+			delete(h.calls, k)
+		}
+	}
+	if c, ok := h.calls[key]; ok {
+		return c, true
+	}
+	c := &callRecord{done: make(chan struct{})}
+	h.calls[key] = c
+	return c, false
+}
+
+// releaseCall abandons a claim without recording an outcome (pre-execution
+// refusals like payment_required, which a later retry must re-run).
+func (h *Harness) releaseCall(key string, c *callRecord) {
+	h.mu.Lock()
+	delete(h.calls, key)
+	h.mu.Unlock()
+	close(c.done)
+}
+
+func (h *Harness) completeCall(c *callRecord, result *mcp.CallToolResult, out any, err error) {
+	h.mu.Lock()
+	c.result, c.out, c.err = result, out, err
+	c.expires = time.Now().Add(callKeyTTL)
+	h.mu.Unlock()
+	close(c.done)
+}
+
 // AddToolPriced registers a tool whose price is computed per call by price
 // (e.g. per-second video). Unless a fixed price is already advertised, the
 // tool is marked dynamic in _meta.
@@ -219,17 +278,55 @@ func AddToolPriced[In any](h *Harness, tool *mcp.Tool, price PriceFunc[In],
 	h.tools = append(h.tools, toolReg{
 		name: tool.Name,
 		register: func(s *mcp.Server, h *Harness, peer string) {
-			mcp.AddTool(s, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+			mcp.AddTool(s, tool, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+				// Idempotency: a retried call carrying the same caller key
+				// waits for and shares the original execution's outcome
+				// instead of executing (and charging) again. Keys are
+				// scoped per peer so callers cannot touch each other's.
+				var key string
+				var rec *callRecord
+				if req != nil && req.Params != nil {
+					if v, ok := req.Params.Meta[CallKeyMetaKey].(string); ok && len(v) >= 8 && len(v) <= 128 {
+						key = peer + "|" + v
+					}
+				}
+				if key != "" {
+					var dup bool
+					rec, dup = h.claimCall(key)
+					if dup {
+						select {
+						case <-rec.done:
+							return rec.result, rec.out, rec.err
+						case <-ctx.Done():
+							return nil, nil, ctx.Err()
+						}
+					}
+				}
+				finish := func(result *mcp.CallToolResult, out any, err error) (*mcp.CallToolResult, any, error) {
+					if rec != nil {
+						h.completeCall(rec, result, out, err)
+					}
+					return result, out, err
+				}
+				refuse := func(result *mcp.CallToolResult, err error) (*mcp.CallToolResult, any, error) {
+					// Pre-execution refusals are not recorded: after a
+					// top-up (or a rate-limit pause) the same key must run
+					// the call for real.
+					if rec != nil {
+						h.releaseCall(key, rec)
+					}
+					return result, nil, err
+				}
 				if !h.takeToken(peer) {
-					return nil, nil, fmt.Errorf("rate limited; retry later")
+					return refuse(nil, fmt.Errorf("rate limited; retry later"))
 				}
 				priceAtoms, err := price(ctx, peer, in)
 				if err != nil {
-					return nil, nil, err
+					return refuse(nil, err)
 				}
 				if priceAtoms > 0 {
 					if pr := h.charge(ctx, tool.Name, peer, priceAtoms); pr != nil {
-						return paymentRequiredResult(pr), nil, nil
+						return refuse(paymentRequiredResult(pr), nil)
 					}
 					ctx = context.WithValue(ctx, chargedAtomsKey{}, priceAtoms)
 				}
@@ -241,9 +338,9 @@ func AddToolPriced[In any](h *Harness, tool *mcp.Tool, price PriceFunc[In],
 							h.logf("brmcp: refund %d to %s failed: %v", priceAtoms, peer, cerr)
 						}
 					}
-					return nil, nil, err
+					return finish(nil, nil, err)
 				}
-				return nil, out, nil
+				return finish(nil, out, nil)
 			})
 		},
 	})
