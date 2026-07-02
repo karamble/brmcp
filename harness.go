@@ -244,6 +244,7 @@ func AddToolPriced[In any](h *Harness, tool *mcp.Tool, price PriceFunc[In],
 					if pr := h.charge(ctx, tool.Name, peer, priceAtoms); pr != nil {
 						return paymentRequiredResult(pr), nil, nil
 					}
+					ctx = context.WithValue(ctx, chargedAtomsKey{}, priceAtoms)
 				}
 				out, err := fn(ctx, peer, in)
 				if err != nil {
@@ -259,6 +260,16 @@ func AddToolPriced[In any](h *Harness, tool *mcp.Tool, price PriceFunc[In],
 			})
 		},
 	})
+}
+
+type chargedAtomsKey struct{}
+
+// ChargedAtoms reports the amount debited from the caller for the current
+// tool call, so handlers can echo the actual charge in their own delivery
+// channel. Zero for free tools.
+func ChargedAtoms(ctx context.Context) int64 {
+	atoms, _ := ctx.Value(chargedAtomsKey{}).(int64)
+	return atoms
 }
 
 // charge debits the call price, or reports what payment is missing. The
