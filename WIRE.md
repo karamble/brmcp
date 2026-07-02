@@ -67,11 +67,11 @@ object:
       "priceAtoms": <int>,
       "balanceAtoms": <int>,
       "shortfallAtoms": <int>,
-      "invoice": "<BOLT11, optional>",
-      "invoiceExpiry": <unix seconds, optional>,
-      "acceptedRails": ["invoice", "tip"]
+      "acceptedRails": ["tip"]
     }
 
-Clients settle by paying the invoice exactly, or by sending a Bison Relay
-tip of at least the shortfall, then retry the call. Balances are
-server-side state per caller uid.
+Clients settle by sending a Bison Relay tip of at least the shortfall,
+then retry the call. Under the hood the tip is Bison Relay's native
+invoice exchange: the payer's client requests an invoice from the bot's
+client over the relay and pays it; neither end of this protocol carries
+a raw invoice. Balances are server-side state per caller uid.

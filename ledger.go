@@ -16,25 +16,14 @@ import (
 // ErrInsufficient reports a debit larger than the caller's balance.
 var ErrInsufficient = errors.New("insufficient balance")
 
-type pendingInvoice struct {
-	UID    string `json:"uid"`
-	Atoms  int64  `json:"atoms"`
-	Expiry int64  `json:"expiry"`
-}
-
 type ledgerData struct {
 	// Balances maps caller uid (64-hex) to spendable atoms.
 	Balances map[string]int64 `json:"balances"`
-	// PendingInvoices maps hex payment hashes to their crediting target,
-	// persisted so an invoice paid across a restart still credits.
-	PendingInvoices map[string]pendingInvoice `json:"pending_invoices"`
-	// SettleIndex resumes the dcrlnd invoice subscription.
-	SettleIndex uint64 `json:"settle_index"`
 }
 
 // Ledger is the server-authoritative payment state: per-caller balances
-// credited by tips and settled invoices, debited by paid tool calls. Every
-// mutation persists synchronously; balances are money.
+// credited by tips, debited by paid tool calls. Every mutation persists
+// synchronously; balances are money.
 type Ledger struct {
 	mu   sync.Mutex
 	path string
@@ -43,8 +32,7 @@ type Ledger struct {
 
 func OpenLedger(path string) (*Ledger, error) {
 	l := &Ledger{path: path, data: ledgerData{
-		Balances:        make(map[string]int64),
-		PendingInvoices: make(map[string]pendingInvoice),
+		Balances: make(map[string]int64),
 	}}
 	raw, err := os.ReadFile(path)
 	switch {
@@ -58,9 +46,6 @@ func OpenLedger(path string) (*Ledger, error) {
 	}
 	if l.data.Balances == nil {
 		l.data.Balances = make(map[string]int64)
-	}
-	if l.data.PendingInvoices == nil {
-		l.data.PendingInvoices = make(map[string]pendingInvoice)
 	}
 	return l, nil
 }
@@ -109,43 +94,3 @@ func (l *Ledger) Debit(uid string, atoms int64) error {
 	return l.persistLocked()
 }
 
-// AddPendingInvoice records an issued invoice so its settlement credits uid.
-func (l *Ledger) AddPendingInvoice(rhashHex, uid string, atoms, expiry int64) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.data.PendingInvoices[rhashHex] = pendingInvoice{UID: uid, Atoms: atoms, Expiry: expiry}
-	return l.persistLocked()
-}
-
-// ResolvePendingInvoice consumes the pending record for a settled invoice
-// and advances the subscription resume point. It does NOT credit: the
-// caller credits the configured Billing exactly once per true return.
-// Unknown hashes only advance the index (an invoice issued by something
-// other than this harness).
-func (l *Ledger) ResolvePendingInvoice(rhashHex string, settleIndex uint64) (uid string, atoms int64, ok bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if settleIndex > l.data.SettleIndex {
-		l.data.SettleIndex = settleIndex
-	}
-	inv, found := l.data.PendingInvoices[rhashHex]
-	if found {
-		delete(l.data.PendingInvoices, rhashHex)
-	}
-	// Persist even for unknown hashes: the index moved.
-	if err := l.persistLocked(); err != nil {
-		// Keep the pending record rather than risk losing the credit if
-		// a restart replays from an already-advanced index.
-		if found {
-			l.data.PendingInvoices[rhashHex] = inv
-		}
-		return "", 0, false
-	}
-	return inv.UID, inv.Atoms, found
-}
-
-func (l *Ledger) SettleIndex() uint64 {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.data.SettleIndex
-}

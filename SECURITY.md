@@ -40,9 +40,10 @@ duplicate chunk sequence numbers.
 - The ledger is server-authoritative. Clients cannot assert balances.
 - Tips credit only allowlisted callers (a stranger's tip is received by the
   wallet but never creates harness state).
-- Invoice settlements are matched by payment hash against invoices this
-  harness issued, credit exactly once, and survive restarts (pending
-  invoices and the subscription resume index are persisted).
+- Payment settlement is Bison Relay's native tip flow: the payer's client
+  requests an invoice from the operator's client over the relay and pays
+  it. The harness never touches LN credentials; it only sees the tip
+  credit reported by the Bison Relay client.
 - A paid call is debited before dispatch and refunded if the handler
   fails, so callers do not pay for operator bugs, and operators do not do
   free work for callers.

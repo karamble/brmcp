@@ -21,15 +21,16 @@ const PriceMetaKey = "brmcp/priceAtoms"
 
 // PaymentRequired is the machine-readable body of the tool error returned
 // when a paid call lacks balance. It is JSON in the result's text content so
-// non-Go clients can parse it without extensions.
+// non-Go clients can parse it without extensions. Settlement is a Bison
+// Relay tip: the payer's client requests an invoice from this bot's client
+// over the relay (RMGetInvoice/RMInvoice) and pays it; the bot only sees the
+// resulting tip credit.
 type PaymentRequired struct {
 	Error          string   `json:"error"` // always "payment_required"
 	Tool           string   `json:"tool"`
 	PriceAtoms     int64    `json:"priceAtoms"`
 	BalanceAtoms   int64    `json:"balanceAtoms"`
 	ShortfallAtoms int64    `json:"shortfallAtoms"`
-	Invoice        string   `json:"invoice,omitempty"`
-	InvoiceExpiry  int64    `json:"invoiceExpiry,omitempty"`
 	AcceptedRails  []string `json:"acceptedRails"`
 }
 
@@ -59,13 +60,10 @@ type HarnessConfig struct {
 	// rate limits do the gating).
 	AllowFunc func(uid string) bool
 	// Billing, when non-nil, replaces the built-in ledger for balance
-	// reads, debits, and credits. The harness still persists its own
-	// invoice book (issued-invoice correlation) in DataDir.
+	// reads, debits, and credits.
 	Billing Billing
 	// CallsPerMinute rate-limits each caller. Zero selects 30.
 	CallsPerMinute int
-	// Dcrlnd enables the invoice rail when fully specified.
-	Dcrlnd *DcrlndConfig
 	// TTL/ChunkSize/Assembler tune the transport (zero = defaults).
 	TTL       time.Duration
 	ChunkSize int
@@ -73,7 +71,7 @@ type HarnessConfig struct {
 }
 
 // Harness carries an MCP tool server over Bison Relay PMs with default-deny
-// authorization, rate limiting, and paid tools settled by tips or invoices.
+// authorization, rate limiting, and paid tools settled by Bison Relay tips.
 // Operators register tools and connect a PM backend; everything else is
 // plumbing they never see.
 type Harness struct {
@@ -81,7 +79,6 @@ type Harness struct {
 	impl    *mcp.Implementation
 	ledger  *Ledger
 	billing Billing
-	issuer  *InvoiceIssuer
 	router  *Router
 	logf    func(format string, args ...any)
 
@@ -124,12 +121,6 @@ func NewHarness(impl *mcp.Implementation, cfg HarnessConfig) (*Harness, error) {
 	for _, uid := range cfg.AllowedPeers {
 		h.allowed[uid] = true
 	}
-	if cfg.Dcrlnd != nil {
-		h.issuer, err = NewInvoiceIssuer(*cfg.Dcrlnd, ledger, h.billing, cfg.Logf)
-		if err != nil {
-			return nil, err
-		}
-	}
 	return h, nil
 }
 
@@ -148,8 +139,7 @@ func (h *Harness) Allowed(peer string) bool {
 }
 
 // Start wires the harness to a PM sender and returns the router whose
-// HandlePM the backend must feed with every inbound private message. It
-// also starts the invoice settlement watcher when the rail is enabled.
+// HandlePM the backend must feed with every inbound private message.
 func (h *Harness) Start(ctx context.Context, sender PMSender) *Router {
 	h.router = NewRouter(RouterConfig{
 		Sender:    sender,
@@ -166,9 +156,6 @@ func (h *Harness) Start(ctx context.Context, sender PMSender) *Router {
 			}
 		},
 	})
-	if h.issuer != nil {
-		go h.issuer.Watch(ctx)
-	}
 	go func() {
 		<-ctx.Done()
 		h.router.Close()
@@ -272,15 +259,14 @@ func ChargedAtoms(ctx context.Context) int64 {
 	return atoms
 }
 
-// charge debits the call price, or reports what payment is missing. The
-// returned PaymentRequired carries a fresh invoice when the rail is up.
-func (h *Harness) charge(ctx context.Context, tool, peer string, price int64) *PaymentRequired {
+// charge debits the call price, or reports what payment is missing.
+func (h *Harness) charge(_ context.Context, tool, peer string, price int64) *PaymentRequired {
 	err := h.billing.Debit(peer, price)
 	if err == nil {
 		return nil
 	}
 	balance := h.billing.Balance(peer)
-	pr := &PaymentRequired{
+	return &PaymentRequired{
 		Error:          "payment_required",
 		Tool:           tool,
 		PriceAtoms:     price,
@@ -288,17 +274,6 @@ func (h *Harness) charge(ctx context.Context, tool, peer string, price int64) *P
 		ShortfallAtoms: price - balance,
 		AcceptedRails:  []string{"tip"},
 	}
-	if h.issuer != nil {
-		invoice, expiry, ierr := h.issuer.Issue(ctx, peer, pr.ShortfallAtoms)
-		if ierr != nil {
-			h.logf("brmcp: issue invoice for %s: %v", peer, ierr)
-		} else {
-			pr.Invoice = invoice
-			pr.InvoiceExpiry = expiry
-			pr.AcceptedRails = []string{"invoice", "tip"}
-		}
-	}
-	return pr
 }
 
 func paymentRequiredResult(pr *PaymentRequired) *mcp.CallToolResult {

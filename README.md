@@ -2,7 +2,7 @@
 
 brmcp carries MCP sessions over Bison Relay private messages. A bot operator
 serves standard MCP tools to KX'd contacts; callers pay per call with Bison
-Relay tips or Lightning invoices. MCP is JSON-RPC 2.0 over a pluggable
+Relay tips. MCP is JSON-RPC 2.0 over a pluggable
 transport, so this is a conforming transport, not a protocol fork: any MCP
 client or server built on the official SDKs can ride it.
 
@@ -13,8 +13,9 @@ Why Bison Relay instead of HTTPS:
   the principal.
 - The server needs zero inbound reachability. It is just another Bison Relay
   client, workable behind NAT or Tor.
-- Payments are native. Per-call prices settle over the Lightning Network with
-  no billing infrastructure, by BR tip or BOLT11 invoice.
+- Payments are native. Per-call prices settle as Bison Relay tips (the
+  clients exchange and pay Lightning invoices under the hood) with no
+  billing infrastructure and no LN credentials on the server.
 - The relay stores and forwards, so long-running results survive disconnects.
 
 ## Repository layout
@@ -23,9 +24,8 @@ Why Bison Relay instead of HTTPS:
   See WIRE.md for the byte-level specification.
 - `transport.go` - the MCP go-sdk custom transport over an abstract private
   message send/receive pair, with per-session routing.
-- `harness.go`, `ledger.go`, `invoice.go`, `bot.go` - the serving harness:
-  allowlist, rate limiting, paid tools, tip and invoice settlement,
-  bisonbotkit lifecycle.
+- `harness.go`, `ledger.go`, `bot.go` - the serving harness: allowlist,
+  rate limiting, paid tools, tip settlement, bisonbotkit lifecycle.
 - `cmd/brmcp-serve` - a runnable example service with a free tool and a paid
   tool. Copy its shape to build your own service.
 
@@ -45,17 +45,10 @@ The first run creates two files in the data directory:
 
     {
       "allowed_uids": ["<64-hex caller uid>"],
-      "calls_per_minute": 30,
-      "dcrlnd": {
-        "addr": "127.0.0.1:10009",
-        "tls_cert": "/path/to/dcrlnd/tls.cert",
-        "macaroon": "/path/to/admin.macaroon"
-      }
+      "calls_per_minute": 30
     }
 
 The allowlist is default-deny: with no uids listed, every caller is refused.
-The `dcrlnd` block is optional; without it the invoice rail is disabled and
-paid tools settle by tip only.
 
 Registering your own tools is one call each:
 
@@ -75,8 +68,8 @@ The caller side is any MCP client behind a Bison Relay client that speaks
 this wire format. The reference client implementation lives in brclientd
 (the `mcp` branch): it exposes a local streamable-HTTP MCP endpoint per bot
 (`/mcp/<bot-uid>`) that agents such as Claude Code connect to, and relays
-the session over Bison Relay, paying for tools by invoice or tip under
-user-configured caps or per-payment approval.
+the session over Bison Relay, paying for tools by tip under user-configured
+caps or per-payment approval.
 
 ## Payments
 
@@ -89,12 +82,12 @@ The server keeps an authoritative per-caller balance ledger:
 
       {"error":"payment_required","tool":"fortune","priceAtoms":10000,
        "balanceAtoms":0,"shortfallAtoms":10000,
-       "invoice":"lnpd...","invoiceExpiry":1780000000,
-       "acceptedRails":["invoice","tip"]}
+       "acceptedRails":["tip"]}
 
-- Paying the attached invoice credits the exact shortfall (settlement is
-  matched by payment hash and survives restarts). Tipping any amount also
-  works. Retry the call after either.
+- Tipping at least the shortfall funds the balance; the tip itself is
+  Bison Relay's native invoice exchange between the two clients, so the
+  amount arrives exactly and the bot needs no LN credentials. Retry the
+  call after the tip completes.
 - A handler error refunds the call price; the ledger keeps no other refund
   path.
 

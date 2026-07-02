@@ -32,9 +32,8 @@ import (
 // on first run. The allowlist is empty by default: nobody can call tools
 // until the operator adds caller uids.
 type serveConfig struct {
-	AllowedUIDs    []string            `json:"allowed_uids"`
-	CallsPerMinute int                 `json:"calls_per_minute"`
-	Dcrlnd         *brmcp.DcrlndConfig `json:"dcrlnd,omitempty"`
+	AllowedUIDs    []string `json:"allowed_uids"`
+	CallsPerMinute int      `json:"calls_per_minute"`
 }
 
 func loadServeConfig(path string) (*serveConfig, error) {
@@ -43,14 +42,12 @@ func loadServeConfig(path string) (*serveConfig, error) {
 		cfg := &serveConfig{
 			AllowedUIDs:    []string{},
 			CallsPerMinute: 30,
-			Dcrlnd:         &brmcp.DcrlndConfig{},
 		}
 		out, _ := json.MarshalIndent(cfg, "", "  ")
 		if err := os.WriteFile(path, out, 0o600); err != nil {
 			return nil, err
 		}
-		log.Printf("created %s - add caller uids to allowed_uids and, for the "+
-			"invoice rail, fill in dcrlnd", path)
+		log.Printf("created %s - add caller uids to allowed_uids", path)
 		return cfg, nil
 	}
 	if err != nil {
@@ -92,17 +89,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var lnCfg *brmcp.DcrlndConfig
-	if cfg.Dcrlnd != nil && cfg.Dcrlnd.Addr != "" {
-		lnCfg = cfg.Dcrlnd
-	}
 	h, err := brmcp.NewHarness(
 		&mcp.Implementation{Name: "brmcp-example", Version: "0.1.0"},
 		brmcp.HarnessConfig{
 			DataDir:        *datadir,
 			AllowedPeers:   cfg.AllowedUIDs,
 			CallsPerMinute: cfg.CallsPerMinute,
-			Dcrlnd:         lnCfg,
 			Logf:           log.Printf,
 		})
 	if err != nil {

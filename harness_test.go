@@ -87,7 +87,7 @@ func TestPaidToolGate(t *testing.T) {
 	}
 
 	// No balance: the call must come back payment_required with the
-	// tip rail (no invoice issuer configured here).
+	// tip rail.
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "paid", Arguments: map[string]any{}})
 	if err != nil {
 		t.Fatal(err)

@@ -30,26 +30,8 @@ func TestLedgerLifecycle(t *testing.T) {
 	if got := l.Balance(uid); got != 60 {
 		t.Fatalf("balance %d != 60", got)
 	}
-
-	// Invoice settlement credits its recorded target once.
-	if err := l.AddPendingInvoice("beef", uid, 25, 0); err != nil {
+	if err := l.Credit(uid, 25); err != nil {
 		t.Fatal(err)
-	}
-	gotUID, atoms, ok := l.ResolvePendingInvoice("beef", 7)
-	if !ok || gotUID != uid || atoms != 25 {
-		t.Fatalf("resolve: %s %d %v", gotUID, atoms, ok)
-	}
-	if err := l.Credit(gotUID, atoms); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, ok := l.ResolvePendingInvoice("beef", 8); ok {
-		t.Fatal("double resolve")
-	}
-	if _, _, ok := l.ResolvePendingInvoice("unknown", 9); ok {
-		t.Fatal("unknown hash resolved")
-	}
-	if got := l.SettleIndex(); got != 9 {
-		t.Fatalf("settle index %d != 9", got)
 	}
 
 	// Everything survives a reopen.
@@ -59,8 +41,5 @@ func TestLedgerLifecycle(t *testing.T) {
 	}
 	if got := l2.Balance(uid); got != 85 {
 		t.Fatalf("reopened balance %d != 85", got)
-	}
-	if got := l2.SettleIndex(); got != 9 {
-		t.Fatalf("reopened settle index %d != 9", got)
 	}
 }
