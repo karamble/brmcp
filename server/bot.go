@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -58,6 +59,17 @@ func RunBot(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig) error {
 	cfg.TipReceivedChan = tipChan
 	cfg.TipProgressChan = tipProgressChan
 
+	// Tips redelivered after a crash between credit and ack must not
+	// credit twice; the journal needs a DataDir to live in.
+	var tips *TipJournal
+	if h.cfg.DataDir != "" {
+		var err error
+		tips, err = OpenTipJournal(filepath.Join(h.cfg.DataDir, "tips.json"))
+		if err != nil {
+			return err
+		}
+	}
+
 	backend := &botBackend{}
 	router := h.Start(ctx, backend)
 
@@ -85,14 +97,22 @@ func RunBot(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig) error {
 				}
 				uid := hex.EncodeToString(tip.Uid)
 				atoms := tip.AmountMatoms / matomsPerAtom
+				already := tips != nil && tips.Seen(tip.SequenceId)
 				// Only allowed peers earn tool credit; anyone else's tip is
 				// still received by the wallet but must not grow the ledger.
-				if h.Allowed(uid) {
+				// A redelivered tip (crash between credit and ack) only
+				// needs its acknowledgement.
+				if h.Allowed(uid) && !already {
 					if err := h.Billing().Credit(uid, atoms); err != nil {
 						h.logf("brmcp: credit tip from %s: %v", uid[:8], err)
 						continue
 					}
 					h.logf("brmcp: tip from %s credited %d atoms", uid[:8], atoms)
+				}
+				if tips != nil && !already {
+					if err := tips.Record(tip.SequenceId); err != nil {
+						h.logf("brmcp: record tip %d: %v", tip.SequenceId, err)
+					}
 				}
 				if bot := backend.current(); bot != nil {
 					if err := bot.AckTipReceived(ctx, tip.SequenceId); err != nil {

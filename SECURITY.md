@@ -56,6 +56,9 @@ duplicate chunk sequence numbers.
   handler's completion refunds the caller on the next start, and
   duplicates of completed paid calls are replayed or refused, never
   re-executed, even across restarts.
+- Received tips are deduplicated by their sequence id, so a tip
+  redelivered after a crash between credit and acknowledgement does not
+  credit twice.
 
 ## The client bridge
 
