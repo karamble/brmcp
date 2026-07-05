@@ -86,10 +86,12 @@ Two more `_meta` keys complete the protocol surface:
 - A tools/call request MAY carry an idempotency key in its `_meta` under
   `brmcp/callKey`: a string of 8 to 128 characters, random 32 hex
   recommended. Servers MUST execute and charge a keyed call at most once
-  per (caller, key) for the lifetime of the serving process: a duplicate
-  waits for the original and replays its recorded outcome (kept at least
-  as long as the envelope deadline horizon; the reference implementation
-  keeps it thirty minutes), while refusals that precede execution (rate
-  limit, payment_required) release the key so a funded retry runs for
-  real. Transport retries and the post-payment reissue of one logical
-  call MUST reuse the same key.
+  per (caller, key): a duplicate waits for the original and replays its
+  recorded outcome (kept at least as long as the envelope deadline
+  horizon; the reference implementation keeps it thirty minutes and
+  journals paid-call claims to disk, so it refunds a charge whose
+  execution a crash interrupted and keeps refusing duplicates of
+  completed paid calls across restarts), while refusals that precede
+  execution (rate limit, payment_required) release the key so a funded
+  retry runs for real. Transport retries and the post-payment reissue of
+  one logical call MUST reuse the same key.

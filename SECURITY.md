@@ -52,6 +52,10 @@ duplicate chunk sequence numbers.
 - A paid call is debited before dispatch and refunded if the handler
   fails, so callers do not pay for operator bugs, and operators do not do
   free work for callers.
+- Paid-call claims are journaled: a crash between the charge and the
+  handler's completion refunds the caller on the next start, and
+  duplicates of completed paid calls are replayed or refused, never
+  re-executed, even across restarts.
 
 ## The client bridge
 

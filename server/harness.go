@@ -61,6 +61,7 @@ type Harness struct {
 	cfg     HarnessConfig
 	impl    *mcp.Implementation
 	billing Billing
+	journal *callJournal
 	router  *brmcp.Router
 	logf    func(format string, args ...any)
 
@@ -108,7 +109,38 @@ func NewHarness(impl *mcp.Implementation, cfg HarnessConfig) (*Harness, error) {
 	for _, uid := range cfg.AllowedPeers {
 		h.allowed[uid] = true
 	}
+	if cfg.DataDir != "" {
+		if err := h.openJournal(); err != nil {
+			return nil, err
+		}
+	}
 	return h, nil
+}
+
+// openJournal loads the paid-call journal and reconciles it: charges whose
+// execution a crash interrupted are refunded, and completed outcomes keep
+// answering duplicates across the restart.
+func (h *Harness) openJournal() error {
+	j, err := openCallJournal(filepath.Join(h.cfg.DataDir, "calls.json"))
+	if err != nil {
+		return err
+	}
+	h.journal = j
+	for key, e := range j.interrupted() {
+		if err := h.billing.Credit(e.Peer, e.Atoms); err != nil {
+			// Keep the entry: the refund runs again on the next start.
+			h.logf("brmcp: refund interrupted call to %s (%d atoms): %v", e.Peer, e.Atoms, err)
+			continue
+		}
+		j.remove(key)
+		h.logf("brmcp: refunded interrupted call: %d atoms to %s", e.Atoms, e.Peer)
+	}
+	now := time.Now()
+	for key, rec := range j.completedRecords(now) {
+		h.calls[key] = rec
+	}
+	j.gc(now)
+	return nil
 }
 
 // Billing exposes the balance store paid tools debit against (the bot glue
@@ -209,6 +241,9 @@ func (h *Harness) claimCall(key string) (*callRecord, bool) {
 			delete(h.calls, k)
 		}
 	}
+	if h.journal != nil {
+		h.journal.gc(now)
+	}
 	if c, ok := h.calls[key]; ok {
 		return c, true
 	}
@@ -226,11 +261,14 @@ func (h *Harness) releaseCall(key string, c *callRecord) {
 	close(c.done)
 }
 
-func (h *Harness) completeCall(c *callRecord, result *mcp.CallToolResult, out any, err error) {
+func (h *Harness) completeCall(key string, c *callRecord, result *mcp.CallToolResult, out any, err error) {
 	h.mu.Lock()
 	c.result, c.out, c.err = result, out, err
 	c.expires = time.Now().Add(callKeyTTL)
 	h.mu.Unlock()
+	if h.journal != nil {
+		h.journal.complete(key, result, out, err, c.expires)
+	}
 	close(c.done)
 }
 
@@ -279,7 +317,7 @@ func AddToolPriced[In any](h *Harness, tool *mcp.Tool, price PriceFunc[In],
 				}
 				finish := func(result *mcp.CallToolResult, out any, err error) (*mcp.CallToolResult, any, error) {
 					if rec != nil {
-						h.completeCall(rec, result, out, err)
+						h.completeCall(key, rec, result, out, err)
 					}
 					return result, out, err
 				}
@@ -302,6 +340,13 @@ func AddToolPriced[In any](h *Harness, tool *mcp.Tool, price PriceFunc[In],
 				if priceAtoms > 0 {
 					if pr := h.charge(ctx, tool.Name, peer, priceAtoms); pr != nil {
 						return refuse(paymentRequiredResult(pr), nil)
+					}
+					// The charge is journaled before the handler runs so a
+					// crash in between refunds it on the next start.
+					if rec != nil && h.journal != nil {
+						if jerr := h.journal.charged(key, peer, priceAtoms); jerr != nil {
+							h.logf("brmcp: journal charge %s: %v", key, jerr)
+						}
 					}
 					ctx = context.WithValue(ctx, chargedAtomsKey{}, priceAtoms)
 				}
