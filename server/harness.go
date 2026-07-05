@@ -34,7 +34,7 @@ type PriceFunc[In any] func(ctx context.Context, peer string, in In) (atoms int6
 
 // HarnessConfig configures a serving harness.
 type HarnessConfig struct {
-	// DataDir holds the ledger and any harness state.
+	// DataDir holds the built-in ledger. Required unless Billing is set.
 	DataDir string
 	// AllowedPeers is the default-deny caller allowlist (64-hex uids).
 	AllowedPeers []string
@@ -60,7 +60,6 @@ type HarnessConfig struct {
 type Harness struct {
 	cfg     HarnessConfig
 	impl    *mcp.Implementation
-	ledger  *Ledger
 	billing Billing
 	router  *brmcp.Router
 	logf    func(format string, args ...any)
@@ -85,23 +84,26 @@ func NewHarness(impl *mcp.Implementation, cfg HarnessConfig) (*Harness, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
-	ledger, err := OpenLedger(filepath.Join(cfg.DataDir, "ledger.json"))
-	if err != nil {
-		return nil, err
+	billing := cfg.Billing
+	if billing == nil {
+		if cfg.DataDir == "" {
+			return nil, fmt.Errorf("brmcp: harness needs a DataDir for the built-in ledger or a Billing store")
+		}
+		ledger, err := OpenLedger(filepath.Join(cfg.DataDir, "ledger.json"))
+		if err != nil {
+			return nil, err
+		}
+		billing = ledger
 	}
 	h := &Harness{
 		cfg:     cfg,
 		impl:    impl,
-		ledger:  ledger,
-		billing: cfg.Billing,
+		billing: billing,
 		logf:    cfg.Logf,
 		allowed: make(map[string]bool),
 		servers: make(map[string]*mcp.Server),
 		buckets: make(map[string]*bucket),
 		calls:   make(map[string]*callRecord),
-	}
-	if h.billing == nil {
-		h.billing = ledger
 	}
 	for _, uid := range cfg.AllowedPeers {
 		h.allowed[uid] = true

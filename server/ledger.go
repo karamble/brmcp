@@ -93,4 +93,3 @@ func (l *Ledger) Debit(uid string, atoms int64) error {
 	l.data.Balances[uid] -= atoms
 	return l.persistLocked()
 }
-
