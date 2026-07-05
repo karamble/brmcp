@@ -94,6 +94,7 @@ type Bridge struct {
 	bots     map[string]*botLink
 	pending  map[string]*pendingPayment
 	spend    []SpendEntry
+	spendSeq int64
 	httpSrv  *http.Server
 	lnAddr   net.Addr
 	closed   bool

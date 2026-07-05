@@ -26,6 +26,11 @@ Authorization is the operator's, and it is default-deny:
 - A message may span at most 64 parts.
 - Per-session inbound queues are bounded; a session that overflows its
   queue is closed rather than buffered without limit.
+- One peer holds at most a bounded number of concurrent sessions (default
+  8); further session attempts are dropped.
+- Sessions idle beyond the idle timeout (default 10 minutes on the serving
+  side) are closed, so an authorized peer cannot accumulate session state
+  by walking away.
 
 ## Replay and staleness
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -46,6 +47,15 @@ type RouterConfig struct {
 	// InboxSize is the per-session queue of decoded inbound messages.
 	// A session that overflows it is closed. Zero selects 128.
 	InboxSize int
+	// IdleTimeout closes sessions with no traffic in either direction for
+	// this long. Zero selects 10 minutes in the server role (Accept set)
+	// and no expiry in the client role; negative disables expiry.
+	IdleTimeout time.Duration
+	// MaxSessionsPerPeer bounds how many concurrent inbound sessions one
+	// peer can hold open (server role); further session attempts are
+	// dropped. Zero selects 8; negative removes the bound. Locally dialed
+	// sessions are not bounded.
+	MaxSessionsPerPeer int
 	// Logf, when non-nil, receives diagnostic lines.
 	Logf func(format string, args ...any)
 }
@@ -53,11 +63,13 @@ type RouterConfig struct {
 // Router demuxes envelope parts arriving on the host's single PM stream
 // into per-(peer, sid) MCP connections.
 type Router struct {
-	cfg RouterConfig
-	asm *wire.Assembler
+	cfg       RouterConfig
+	asm       *wire.Assembler
+	sweepStop chan struct{}
 
 	mu       sync.Mutex
 	sessions map[string]*Conn // key: peer + "/" + sid
+	peers    map[string]int   // concurrent sessions per peer
 	closed   bool
 }
 
@@ -68,10 +80,54 @@ func NewRouter(cfg RouterConfig) *Router {
 	if cfg.InboxSize <= 0 {
 		cfg.InboxSize = 128
 	}
-	return &Router{
+	if cfg.IdleTimeout == 0 && cfg.Accept != nil {
+		cfg.IdleTimeout = 10 * time.Minute
+	}
+	if cfg.MaxSessionsPerPeer == 0 {
+		cfg.MaxSessionsPerPeer = 8
+	}
+	r := &Router{
 		cfg:      cfg,
 		asm:      wire.NewAssembler(cfg.Assembler),
 		sessions: make(map[string]*Conn),
+		peers:    make(map[string]int),
+	}
+	if cfg.IdleTimeout > 0 {
+		r.sweepStop = make(chan struct{})
+		go r.sweep()
+	}
+	return r
+}
+
+// sweep closes sessions whose last traffic is older than IdleTimeout.
+func (r *Router) sweep() {
+	interval := r.cfg.IdleTimeout / 4
+	if interval < 100*time.Millisecond {
+		interval = 100 * time.Millisecond
+	}
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.sweepStop:
+			return
+		case now := <-t.C:
+			r.mu.Lock()
+			var idle []*Conn
+			for _, c := range r.sessions {
+				if now.Sub(c.lastActive()) > r.cfg.IdleTimeout {
+					idle = append(idle, c)
+				}
+			}
+			r.mu.Unlock()
+			for _, c := range idle {
+				r.logf("brmcp: closing idle session %s", c.SessionID())
+				c.Close()
+			}
+		}
 	}
 }
 
@@ -120,10 +176,16 @@ func (r *Router) HandlePM(peer, text string) {
 			r.logf("brmcp: no session %s and no Accept; dropping", key)
 			return
 		}
+		if r.cfg.MaxSessionsPerPeer > 0 && r.peers[peer] >= r.cfg.MaxSessionsPerPeer {
+			r.mu.Unlock()
+			r.logf("brmcp: peer %s is at the session limit; dropping new session", peer)
+			return
+		}
 		conn = r.newConnLocked(peer, part.SID)
 		accepted = conn
 	}
 	r.mu.Unlock()
+	conn.touch()
 
 	// Accept runs outside the lock: it typically hands the connection to
 	// an MCP server, which may immediately Write.
@@ -164,24 +226,37 @@ func (r *Router) newConnLocked(peer, sid string) *Conn {
 		inbox:     make(chan jsonrpc.Message, r.cfg.InboxSize),
 		done:      make(chan struct{}),
 	}
+	conn.touch()
 	conn.onClose = func() {
 		r.mu.Lock()
-		delete(r.sessions, key)
+		if _, ok := r.sessions[key]; ok {
+			delete(r.sessions, key)
+			if n := r.peers[peer]; n <= 1 {
+				delete(r.peers, peer)
+			} else {
+				r.peers[peer] = n - 1
+			}
+		}
 		r.mu.Unlock()
 	}
 	r.sessions[key] = conn
+	r.peers[peer]++
 	return conn
 }
 
 // Close tears down every session.
 func (r *Router) Close() {
 	r.mu.Lock()
+	alreadyClosed := r.closed
 	r.closed = true
 	conns := make([]*Conn, 0, len(r.sessions))
 	for _, c := range r.sessions {
 		conns = append(conns, c)
 	}
 	r.mu.Unlock()
+	if !alreadyClosed && r.sweepStop != nil {
+		close(r.sweepStop)
+	}
 	for _, c := range conns {
 		c.Close()
 	}
@@ -199,7 +274,12 @@ type Conn struct {
 	done      chan struct{}
 	closeOnce sync.Once
 	onClose   func()
+	active    atomic.Int64 // unix nanos of the last traffic
 }
+
+func (c *Conn) touch() { c.active.Store(time.Now().UnixNano()) }
+
+func (c *Conn) lastActive() time.Time { return time.Unix(0, c.active.Load()) }
 
 // Peer returns the Bison Relay uid this session talks to.
 func (c *Conn) Peer() string { return c.peer }
@@ -223,6 +303,7 @@ func (c *Conn) Write(ctx context.Context, msg jsonrpc.Message) error {
 		return io.EOF
 	default:
 	}
+	c.touch()
 	data, err := jsonrpc.EncodeMessage(msg)
 	if err != nil {
 		return err

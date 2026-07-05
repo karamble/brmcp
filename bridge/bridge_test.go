@@ -151,6 +151,7 @@ func (s *flakySender) SendPM(ctx context.Context, peer, text string) error {
 type fixture struct {
 	t       *testing.T
 	ctx     context.Context
+	fab     *brmcptest.Fabric
 	harness *server.Harness
 	bridge  *bridge.Bridge
 	clk     *testClock
@@ -201,6 +202,7 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 
 	fab := brmcptest.NewFabric()
 	t.Cleanup(fab.Close)
+	fx.fab = fab
 	botRouter := h.Start(ctx, fab.Sender(botUID))
 	fab.Attach(botUID, botRouter.HandlePM)
 

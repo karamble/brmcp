@@ -41,13 +41,19 @@ func (p *pendingPayment) decide(approve bool) {
 	p.once.Do(func() { p.decision <- approve })
 }
 
-// SpendEntry is one settled payment, persisted in mcpspend.json.
+// SpendEntry is one payment, persisted in mcpspend.json. Entries are
+// recorded when a payment launches and removed again only when the rail
+// reports definitive failure; a payment whose outcome is unknown (the wait
+// deadline passed with the attempt still running) stays counted against
+// the daily cap.
 type SpendEntry struct {
 	TS    int64  `json:"ts"`
 	Bot   string `json:"bot"`
 	Tool  string `json:"tool"`
 	Rail  string `json:"rail"`
 	Atoms int64  `json:"atoms"`
+
+	seq int64
 }
 
 // spendKeep bounds the persisted spend log; entries still inside the
@@ -86,14 +92,22 @@ func (b *Bridge) settle(ctx context.Context, bot, tool string, pr *brmcp.Payment
 		}
 	}
 
+	// The spend is counted from launch: money may leave even when the
+	// confirmation wait expires (the attempt keeps running on the rail),
+	// so only a definitive failure uncounts it.
+	b.mu.Lock()
+	seq := b.recordSpendLocked(bot, tool, "tip", atoms)
+	b.mu.Unlock()
 	payCtx, cancel := context.WithTimeout(ctx, time.Duration(s.TipWaitSecs)*time.Second)
 	defer cancel()
 	if err := b.cfg.Payer.Pay(payCtx, bot, atoms); err != nil {
+		if payCtx.Err() == nil {
+			b.mu.Lock()
+			b.removeSpendLocked(seq)
+			b.mu.Unlock()
+		}
 		return err
 	}
-	b.mu.Lock()
-	b.recordSpendLocked(bot, tool, "tip", atoms)
-	b.mu.Unlock()
 	b.logf("brmcp bridge: paid %d atoms for %s/%s", atoms, bot[:8], tool)
 	return nil
 }
@@ -181,12 +195,31 @@ func (b *Bridge) SpendLog() (entries []SpendEntry, todayAtoms int64) {
 	return entries, b.spentSinceLocked(b.clk.Now().Add(-24 * time.Hour))
 }
 
-func (b *Bridge) recordSpendLocked(bot, tool, rail string, atoms int64) {
+func (b *Bridge) recordSpendLocked(bot, tool, rail string, atoms int64) int64 {
+	b.spendSeq++
+	seq := b.spendSeq
 	b.spend = append(b.spend, SpendEntry{
 		TS: b.clk.Now().Unix(), Bot: bot, Tool: tool, Rail: rail, Atoms: atoms,
+		seq: seq,
 	})
 	if err := b.persistSpendLocked(); err != nil {
 		b.logf("brmcp bridge: persist spend log: %v", err)
+	}
+	return seq
+}
+
+// removeSpendLocked uncounts a launched payment whose rail reported
+// definitive failure. Entries loaded from disk carry no seq and are never
+// removed.
+func (b *Bridge) removeSpendLocked(seq int64) {
+	for i, s := range b.spend {
+		if s.seq == seq && seq != 0 {
+			b.spend = append(b.spend[:i], b.spend[i+1:]...)
+			if err := b.persistSpendLocked(); err != nil {
+				b.logf("brmcp bridge: persist spend log: %v", err)
+			}
+			return
+		}
 	}
 }
 

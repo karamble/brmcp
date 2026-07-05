@@ -27,9 +27,9 @@ func (b *Bridge) Handler() http.Handler {
 		uid := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/mcp/"))
 		srv, err := b.proxyServerFor(uid)
 		if err != nil {
+			// Unreachable after the middleware preflight; kept as a
+			// backstop so the handshake stays valid.
 			b.logf("brmcp bridge: proxy for %s: %v", uid, err)
-			// An empty server keeps the transport handshake valid while
-			// exposing nothing.
 			return mcp.NewServer(&mcp.Implementation{Name: b.cfg.Name, Version: "0"}, nil)
 		}
 		return srv
@@ -55,6 +55,14 @@ func (b *Bridge) authMiddleware(next http.Handler) http.Handler {
 		uid := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/mcp/"))
 		if !uidRe.MatchString(uid) || !b.botAllowed(uid) {
 			http.Error(w, "unknown bot", http.StatusNotFound)
+			return
+		}
+		// Building (or fetching) the proxy up front turns an unreachable
+		// bot into a clean 503 instead of a hollow MCP handshake the agent
+		// would cache as an empty tool list.
+		if _, err := b.proxyServerFor(uid); err != nil {
+			b.logf("brmcp bridge: proxy for %s: %v", uid, err)
+			http.Error(w, "bot unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		next.ServeHTTP(w, r)

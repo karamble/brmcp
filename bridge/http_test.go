@@ -177,6 +177,9 @@ func TestOwnedListenerLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
+	// This bridge takes over the agent identity on the fabric so its
+	// endpoint preflight can reach the bot.
+	fx.fab.Attach(agentUID, b.HandlePM)
 	if err := b.Start(fx.ctx); err != nil {
 		t.Fatal(err)
 	}
