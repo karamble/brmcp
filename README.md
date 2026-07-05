@@ -18,6 +18,16 @@ Why Bison Relay instead of HTTPS:
   billing infrastructure and no LN credentials on the server.
 - The relay stores and forwards, so long-running results survive disconnects.
 
+The two ends and the path between them:
+
+    agent (any MCP client)
+       |  streamable HTTP + bearer token, localhost
+    client bridge (bridge/, embedded in the user's BR daemon)
+       |  envelope parts over BR private messages; tips settle payments
+    serving harness (server/, around the operator's BR client)
+       |  registered tool handlers
+    the operator's service
+
 ## Repository layout
 
 - `wire/` - the envelope codec: framing, chunking, reassembly, deadlines.
@@ -27,6 +37,9 @@ Why Bison Relay instead of HTTPS:
   per-session routing, the envelope predicate, and the payment metadata.
 - `server/` - the serving harness: allowlist, rate limiting, paid tools,
   the prepaid ledger, tip settlement, bisonbotkit lifecycle.
+- `bridge/` - the client bridge: per-bot local MCP endpoints mirroring
+  remote tools, the spending policy (caps, approval/autopay), payment
+  settlement through a host-supplied rail. See BRIDGE.md.
 - `brmcptest/` - an in-memory PM fabric for testing endpoints without a
   relay.
 - `cmd/brmcp-serve` - a runnable example service with a free tool and a paid
@@ -67,12 +80,13 @@ handler runs.
 
 ## Calling tools
 
-The caller side is any MCP client behind a Bison Relay client that speaks
-this wire format. The reference client implementation lives in brclientd
-(the `mcp` branch): it exposes a local streamable-HTTP MCP endpoint per bot
-(`/mcp/<bot-uid>`) that agents such as Claude Code connect to, and relays
-the session over Bison Relay, paying for tools by tip under user-configured
-caps or per-payment approval.
+The caller side is the `bridge` package: a library engine a Bison Relay
+daemon embeds to expose a local streamable-HTTP MCP endpoint per bot
+(`/mcp/<bot-uid>`) that agents such as Claude Code connect to. The bridge
+relays the session over Bison Relay and pays for tools by tip under
+user-configured caps, either unattended or after per-payment approval.
+brclientd is the reference host; embedding it in another daemon takes a PM
+sender, a PM feed, and a payment hook - see BRIDGE.md.
 
 ## Payments
 

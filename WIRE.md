@@ -75,3 +75,21 @@ then retry the call. Under the hood the tip is Bison Relay's native
 invoice exchange: the payer's client requests an invoice from the bot's
 client over the relay and pays it; neither end of this protocol carries
 a raw invoice. Balances are server-side state per caller uid.
+
+## Call metadata
+
+Two more `_meta` keys complete the protocol surface:
+
+- Tools priced per call from their arguments (rather than at a fixed
+  price) carry `brmcp/pricing: "dynamic"` in their tools/list `_meta`; the
+  authoritative quote arrives in the payment_required object.
+- A tools/call request MAY carry an idempotency key in its `_meta` under
+  `brmcp/callKey`: a string of 8 to 128 characters, random 32 hex
+  recommended. Servers MUST execute and charge a keyed call at most once
+  per (caller, key) for the lifetime of the serving process: a duplicate
+  waits for the original and replays its recorded outcome (kept at least
+  as long as the envelope deadline horizon; the reference implementation
+  keeps it thirty minutes), while refusals that precede execution (rate
+  limit, payment_required) release the key so a funded retry runs for
+  real. Transport retries and the post-payment reissue of one logical
+  call MUST reuse the same key.
