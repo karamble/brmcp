@@ -25,7 +25,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	kitconfig "github.com/vctt94/bisonbotkit/config"
 
-	"github.com/karamble/brmcp"
+	"github.com/karamble/brmcp/server"
 )
 
 // serveConfig is the operator-edited harness config, created as a template
@@ -89,9 +89,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	h, err := brmcp.NewHarness(
+	h, err := server.NewHarness(
 		&mcp.Implementation{Name: "brmcp-example", Version: "0.1.0"},
-		brmcp.HarnessConfig{
+		server.HarnessConfig{
 			DataDir:        *datadir,
 			AllowedPeers:   cfg.AllowedUIDs,
 			CallsPerMinute: cfg.CallsPerMinute,
@@ -101,14 +101,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	brmcp.AddTool(h, &mcp.Tool{
+	server.AddTool(h, &mcp.Tool{
 		Name:        "echo",
 		Description: "Echo the provided text back to the caller.",
 	}, 0, func(_ context.Context, _ string, in echoIn) (any, error) {
 		return map[string]string{"echo": in.Text}, nil
 	})
 	// 0.0001 DCR per call demonstrates the paid path end to end.
-	brmcp.AddTool(h, &mcp.Tool{
+	server.AddTool(h, &mcp.Tool{
 		Name:        "fortune",
 		Description: "Return a fortune. Paid per call.",
 	}, 10_000, func(context.Context, string, struct{}) (any, error) {
@@ -123,7 +123,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := brmcp.RunBot(ctx, h, botCfg); err != nil && !errors.Is(err, context.Canceled) {
+	if err := server.RunBot(ctx, h, botCfg); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
 }

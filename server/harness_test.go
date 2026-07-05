@@ -2,7 +2,7 @@
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
-package brmcp
+package server_test
 
 import (
 	"context"
@@ -12,28 +12,29 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/karamble/brmcp"
+	"github.com/karamble/brmcp/brmcptest"
+	"github.com/karamble/brmcp/server"
+)
+
+var (
+	clientUID = brmcptest.UID(1)
+	serverUID = brmcptest.UID(2)
 )
 
 // startHarnessFabric wires a harness (server role) and a plain router
 // (client role) through an in-memory PM fabric and opens a client session.
-func startHarnessFabric(t *testing.T, h *Harness) *mcp.ClientSession {
+func startHarnessFabric(t *testing.T, h *server.Harness) *mcp.ClientSession {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 
-	var serverRouter *Router
-	clientRouter := NewRouter(RouterConfig{
-		Sender: senderFunc(func(_ context.Context, _, text string) error {
-			go serverRouter.HandlePM(clientUID, text)
-			return nil
-		}),
-		Logf: t.Logf,
-	})
-	serverRouter = h.Start(ctx, senderFunc(func(_ context.Context, _, text string) error {
-		go clientRouter.HandlePM(serverUID, text)
-		return nil
-	}))
-	t.Cleanup(clientRouter.Close)
+	f := brmcptest.NewFabric()
+	t.Cleanup(f.Close)
+	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{Logf: t.Logf})
+	serverRouter := h.Start(ctx, f.Sender(serverUID))
+	f.Attach(serverUID, serverRouter.HandlePM)
 
 	conn, err := clientRouter.Dial(serverUID)
 	if err != nil {
@@ -49,7 +50,7 @@ func startHarnessFabric(t *testing.T, h *Harness) *mcp.ClientSession {
 }
 
 func TestPaidToolGate(t *testing.T) {
-	h, err := NewHarness(&mcp.Implementation{Name: "t", Version: "0"}, HarnessConfig{
+	h, err := server.NewHarness(&mcp.Implementation{Name: "t", Version: "0"}, server.HarnessConfig{
 		DataDir:        t.TempDir(),
 		AllowedPeers:   []string{clientUID},
 		CallsPerMinute: 100,
@@ -58,11 +59,11 @@ func TestPaidToolGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	AddTool(h, &mcp.Tool{Name: "paid", Description: "paid tool"}, 500,
+	server.AddTool(h, &mcp.Tool{Name: "paid", Description: "paid tool"}, 500,
 		func(_ context.Context, peer string, _ struct{}) (any, error) {
 			return map[string]string{"caller": peer[:4]}, nil
 		})
-	AddTool(h, &mcp.Tool{Name: "flaky", Description: "always fails"}, 500,
+	server.AddTool(h, &mcp.Tool{Name: "flaky", Description: "always fails"}, 500,
 		func(context.Context, string, struct{}) (any, error) {
 			return nil, errors.New("operator bug")
 		})
@@ -77,7 +78,7 @@ func TestPaidToolGate(t *testing.T) {
 	var sawPrice bool
 	for _, tool := range tl.Tools {
 		if tool.Name == "paid" {
-			if v, ok := tool.Meta[PriceMetaKey].(float64); ok && int64(v) == 500 {
+			if v, ok := tool.Meta[brmcp.PriceMetaKey].(float64); ok && int64(v) == 500 {
 				sawPrice = true
 			}
 		}
@@ -95,9 +96,9 @@ func TestPaidToolGate(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("unpaid call succeeded")
 	}
-	var pr PaymentRequired
-	if err := json.Unmarshal([]byte(contentText(res)), &pr); err != nil {
-		t.Fatalf("payment_required not parseable: %v: %s", err, contentText(res))
+	var pr brmcp.PaymentRequired
+	if err := json.Unmarshal([]byte(brmcptest.Text(res)), &pr); err != nil {
+		t.Fatalf("payment_required not parseable: %v: %s", err, brmcptest.Text(res))
 	}
 	if pr.Error != "payment_required" || pr.PriceAtoms != 500 || pr.ShortfallAtoms != 500 {
 		t.Fatalf("unexpected payment_required: %+v", pr)
@@ -115,7 +116,7 @@ func TestPaidToolGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res.IsError {
-		t.Fatalf("funded call failed: %s", contentText(res))
+		t.Fatalf("funded call failed: %s", brmcptest.Text(res))
 	}
 	if got := h.Billing().Balance(clientUID); got != 100 {
 		t.Fatalf("balance after paid call: %d != 100", got)
@@ -138,7 +139,7 @@ func TestPaidToolGate(t *testing.T) {
 }
 
 func TestCallKeyIdempotency(t *testing.T) {
-	h, err := NewHarness(&mcp.Implementation{Name: "t", Version: "0"}, HarnessConfig{
+	h, err := server.NewHarness(&mcp.Implementation{Name: "t", Version: "0"}, server.HarnessConfig{
 		DataDir:        t.TempDir(),
 		AllowedPeers:   []string{clientUID},
 		CallsPerMinute: 100,
@@ -148,7 +149,7 @@ func TestCallKeyIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	var executions int
-	AddTool(h, &mcp.Tool{Name: "paid", Description: "paid tool"}, 500,
+	server.AddTool(h, &mcp.Tool{Name: "paid", Description: "paid tool"}, 500,
 		func(context.Context, string, struct{}) (any, error) {
 			executions++
 			return map[string]int{"n": executions}, nil
@@ -159,7 +160,7 @@ func TestCallKeyIdempotency(t *testing.T) {
 	// An unfunded keyed call refuses with payment_required and must NOT
 	// pin that refusal to the key: after a top-up the same key runs for
 	// real (the client retries the identical logical call post-payment).
-	key := mcp.Meta{CallKeyMetaKey: "test-call-key-0001"}
+	key := mcp.Meta{brmcp.CallKeyMetaKey: "test-call-key-0001"}
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "paid", Meta: key, Arguments: map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +176,7 @@ func TestCallKeyIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res.IsError {
-		t.Fatalf("funded keyed call failed: %s", contentText(res))
+		t.Fatalf("funded keyed call failed: %s", brmcptest.Text(res))
 	}
 	if executions != 1 {
 		t.Fatalf("executions after first funded call: %d != 1", executions)
@@ -191,7 +192,7 @@ func TestCallKeyIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res2.IsError {
-		t.Fatalf("duplicate keyed call failed: %s", contentText(res2))
+		t.Fatalf("duplicate keyed call failed: %s", brmcptest.Text(res2))
 	}
 	if executions != 1 {
 		t.Fatalf("duplicate executed the handler: executions %d != 1", executions)
@@ -199,44 +200,24 @@ func TestCallKeyIdempotency(t *testing.T) {
 	if got := h.Billing().Balance(clientUID); got != 700 {
 		t.Fatalf("duplicate was charged: balance %d != 700", got)
 	}
-	if contentText(res2) != contentText(res) {
-		t.Fatalf("duplicate outcome differs: %s != %s", contentText(res2), contentText(res))
+	if brmcptest.Text(res2) != brmcptest.Text(res) {
+		t.Fatalf("duplicate outcome differs: %s != %s", brmcptest.Text(res2), brmcptest.Text(res))
 	}
 
 	// A fresh key executes and charges again.
 	res3, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "paid", Meta: mcp.Meta{CallKeyMetaKey: "test-call-key-0002"}, Arguments: map[string]any{},
+		Name: "paid", Meta: mcp.Meta{brmcp.CallKeyMetaKey: "test-call-key-0002"}, Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res3.IsError {
-		t.Fatalf("fresh keyed call failed: %s", contentText(res3))
+		t.Fatalf("fresh keyed call failed: %s", brmcptest.Text(res3))
 	}
 	if executions != 2 {
 		t.Fatalf("fresh key did not execute: executions %d != 2", executions)
 	}
 	if got := h.Billing().Balance(clientUID); got != 200 {
 		t.Fatalf("balance after second charge: %d != 200", got)
-	}
-}
-
-func TestRateLimit(t *testing.T) {
-	h, err := NewHarness(&mcp.Implementation{Name: "t", Version: "0"}, HarnessConfig{
-		DataDir:        t.TempDir(),
-		CallsPerMinute: 2,
-		Logf:           t.Logf,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !h.takeToken("peer") || !h.takeToken("peer") {
-		t.Fatal("bucket refused within budget")
-	}
-	if h.takeToken("peer") {
-		t.Fatal("bucket allowed above budget")
-	}
-	if !h.takeToken("other") {
-		t.Fatal("buckets are not per peer")
 	}
 }

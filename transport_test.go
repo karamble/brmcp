@@ -2,73 +2,24 @@
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
-package brmcp
+package brmcp_test
 
 import (
 	"context"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/karamble/brmcp"
+	"github.com/karamble/brmcp/brmcptest"
 )
 
-type senderFunc func(ctx context.Context, peer, text string) error
-
-func (f senderFunc) SendPM(ctx context.Context, peer, text string) error {
-	return f(ctx, peer, text)
-}
-
-const (
-	clientUID = "1111111111111111111111111111111111111111111111111111111111111111"
-	serverUID = "2222222222222222222222222222222222222222222222222222222222222222"
+var (
+	clientUID = brmcptest.UID(1)
+	serverUID = brmcptest.UID(2)
 )
-
-// fabric wires two routers as Bison Relay would: a PM sent by one side is
-// delivered to the other side's HandlePM attributed to the sender's uid.
-// Delivery is asynchronous, like the real relay.
-type fabric struct {
-	client *Router
-	server *Router
-	sent   atomic.Int64 // PMs crossing the fabric, to assert chunk counts
-}
-
-func newFabric(t *testing.T, accept func(*Conn), allow func(string) bool, chunkSize int) *fabric {
-	t.Helper()
-	f := &fabric{}
-	f.client = NewRouter(RouterConfig{
-		Sender: senderFunc(func(_ context.Context, peer, text string) error {
-			if peer != serverUID {
-				t.Errorf("client sent to unexpected peer %s", peer)
-			}
-			f.sent.Add(1)
-			go f.server.HandlePM(clientUID, text)
-			return nil
-		}),
-		ChunkSize: chunkSize,
-		Logf:      t.Logf,
-	})
-	f.server = NewRouter(RouterConfig{
-		Sender: senderFunc(func(_ context.Context, peer, text string) error {
-			if peer != clientUID {
-				t.Errorf("server sent to unexpected peer %s", peer)
-			}
-			f.sent.Add(1)
-			go f.client.HandlePM(serverUID, text)
-			return nil
-		}),
-		Accept:    accept,
-		Allow:     allow,
-		ChunkSize: chunkSize,
-		Logf:      t.Logf,
-	})
-	t.Cleanup(func() {
-		f.client.Close()
-		f.server.Close()
-	})
-	return f
-}
 
 type echoIn struct {
 	Text string `json:"text"`
@@ -94,13 +45,20 @@ func TestMCPSessionOverPM(t *testing.T) {
 
 	server := newEchoServer(t)
 	// ChunkSize 512 forces the big tool's result to cross as many parts.
-	f := newFabric(t, func(conn *Conn) {
-		if _, err := server.Connect(ctx, conn.AsTransport(), nil); err != nil {
-			t.Errorf("server connect: %v", err)
-		}
-	}, nil, 512)
+	f := brmcptest.NewFabric()
+	t.Cleanup(f.Close)
+	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{ChunkSize: 512, Logf: t.Logf})
+	f.NewRouter(serverUID, brmcp.RouterConfig{
+		ChunkSize: 512,
+		Logf:      t.Logf,
+		Accept: func(conn *brmcp.Conn) {
+			if _, err := server.Connect(ctx, conn.AsTransport(), nil); err != nil {
+				t.Errorf("server connect: %v", err)
+			}
+		},
+	})
 
-	conn, err := f.client.Dial(serverUID)
+	conn, err := clientRouter.Dial(serverUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,32 +87,37 @@ func TestMCPSessionOverPM(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("echo returned tool error: %+v", res.Content)
 	}
-	if text := contentText(res); !strings.Contains(text, "hello over BR") {
+	if text := brmcptest.Text(res); !strings.Contains(text, "hello over BR") {
 		t.Fatalf("echo result missing input: %s", text)
 	}
 
-	pmsBefore := f.sent.Load()
+	pmsBefore := f.Sent()
 	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "big", Arguments: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CallTool big: %v", err)
 	}
-	if text := contentText(res); !strings.Contains(text, strings.Repeat("x", 512)) {
+	if text := brmcptest.Text(res); !strings.Contains(text, strings.Repeat("x", 512)) {
 		t.Fatalf("big result truncated: %d bytes", len(text))
 	}
 	// The oversized result must have crossed the fabric chunked: one part
 	// for the request plus many for the response.
-	if crossed := f.sent.Load() - pmsBefore; crossed < 10 {
+	if crossed := f.Sent() - pmsBefore; crossed < 10 {
 		t.Fatalf("expected chunked response, only %d PMs crossed", crossed)
 	}
 }
 
 func TestDisallowedPeerIgnored(t *testing.T) {
-	accepted := make(chan *Conn, 1)
-	f := newFabric(t, func(conn *Conn) { accepted <- conn }, func(peer string) bool {
-		return peer != clientUID
-	}, 0)
+	accepted := make(chan *brmcp.Conn, 1)
+	f := brmcptest.NewFabric()
+	t.Cleanup(f.Close)
+	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{Logf: t.Logf})
+	f.NewRouter(serverUID, brmcp.RouterConfig{
+		Logf:   t.Logf,
+		Accept: func(conn *brmcp.Conn) { accepted <- conn },
+		Allow:  func(peer string) bool { return peer != clientUID },
+	})
 
-	conn, err := f.client.Dial(serverUID)
+	conn, err := clientRouter.Dial(serverUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,21 +135,16 @@ func TestDisallowedPeerIgnored(t *testing.T) {
 }
 
 func TestHumanChatIgnored(t *testing.T) {
-	f := newFabric(t, func(conn *Conn) {
-		t.Error("plain chat created a session")
-	}, nil, 0)
-	f.server.HandlePM(clientUID, "hey bot, how are you?")
-	f.server.HandlePM(clientUID, "> **nick:** quoted chat\n\nreply")
-	f.server.HandlePM(clientUID, "--embed[type=image/png,data=QUJD]--")
+	f := brmcptest.NewFabric()
+	t.Cleanup(f.Close)
+	srv := f.NewRouter(serverUID, brmcp.RouterConfig{
+		Logf: t.Logf,
+		Accept: func(conn *brmcp.Conn) {
+			t.Error("plain chat created a session")
+		},
+	})
+	srv.HandlePM(clientUID, "hey bot, how are you?")
+	srv.HandlePM(clientUID, "> **nick:** quoted chat\n\nreply")
+	srv.HandlePM(clientUID, "--embed[type=image/png,data=QUJD]--")
 	time.Sleep(50 * time.Millisecond)
-}
-
-func contentText(res *mcp.CallToolResult) string {
-	var sb strings.Builder
-	for _, c := range res.Content {
-		if tc, ok := c.(*mcp.TextContent); ok {
-			sb.WriteString(tc.Text)
-		}
-	}
-	return sb.String()
 }

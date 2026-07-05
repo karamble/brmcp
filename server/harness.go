@@ -2,7 +2,7 @@
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
-package brmcp
+package server
 
 import (
 	"context"
@@ -13,26 +13,9 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/karamble/brmcp"
 )
-
-// PriceMetaKey is the tool _meta key advertising the per-call price in
-// atoms, visible to clients in tools/list.
-const PriceMetaKey = "brmcp/priceAtoms"
-
-// PaymentRequired is the machine-readable body of the tool error returned
-// when a paid call lacks balance. It is JSON in the result's text content so
-// non-Go clients can parse it without extensions. Settlement is a Bison
-// Relay tip: the payer's client requests an invoice from this bot's client
-// over the relay (RMGetInvoice/RMInvoice) and pays it; the bot only sees the
-// resulting tip credit.
-type PaymentRequired struct {
-	Error          string   `json:"error"` // always "payment_required"
-	Tool           string   `json:"tool"`
-	PriceAtoms     int64    `json:"priceAtoms"`
-	BalanceAtoms   int64    `json:"balanceAtoms"`
-	ShortfallAtoms int64    `json:"shortfallAtoms"`
-	AcceptedRails  []string `json:"acceptedRails"`
-}
 
 // Billing is the balance store paid tools debit against. The built-in
 // Ledger implements it; services with their own accounting (tip-funded
@@ -79,7 +62,7 @@ type Harness struct {
 	impl    *mcp.Implementation
 	ledger  *Ledger
 	billing Billing
-	router  *Router
+	router  *brmcp.Router
 	logf    func(format string, args ...any)
 
 	mu      sync.Mutex
@@ -142,15 +125,15 @@ func (h *Harness) Allowed(peer string) bool {
 
 // Start wires the harness to a PM sender and returns the router whose
 // HandlePM the backend must feed with every inbound private message.
-func (h *Harness) Start(ctx context.Context, sender PMSender) *Router {
-	h.router = NewRouter(RouterConfig{
+func (h *Harness) Start(ctx context.Context, sender brmcp.PMSender) *brmcp.Router {
+	h.router = brmcp.NewRouter(brmcp.RouterConfig{
 		Sender:    sender,
 		Allow:     h.Allowed,
 		TTL:       h.cfg.TTL,
 		ChunkSize: h.cfg.ChunkSize,
 		InboxSize: 0,
 		Logf:      h.logf,
-		Accept: func(conn *Conn) {
+		Accept: func(conn *brmcp.Conn) {
 			srv := h.serverFor(conn.Peer())
 			if _, err := srv.Connect(ctx, conn.AsTransport(), nil); err != nil {
 				h.logf("brmcp: session %s: %v", conn.SessionID(), err)
@@ -191,22 +174,12 @@ func AddTool[In any](h *Harness, tool *mcp.Tool, priceAtoms int64,
 		if tool.Meta == nil {
 			tool.Meta = mcp.Meta{}
 		}
-		tool.Meta[PriceMetaKey] = priceAtoms
+		tool.Meta[brmcp.PriceMetaKey] = priceAtoms
 	}
 	AddToolPriced(h, tool, func(context.Context, string, In) (int64, error) {
 		return priceAtoms, nil
 	}, fn)
 }
-
-// PricingMetaKey marks tools whose price is computed per call from the
-// arguments; the authoritative quote arrives in the payment_required error.
-const PricingMetaKey = "brmcp/pricing"
-
-// CallKeyMetaKey is the caller-supplied idempotency key in a tools/call
-// _meta. A transport retry of the same logical call reuses the key; the
-// harness executes and charges once and replays the recorded outcome to
-// duplicates, so a lost reply can never double-bill.
-const CallKeyMetaKey = "brmcp/callKey"
 
 // callRecord tracks one keyed call from claim to completion so duplicates
 // wait for and share the original's outcome.
@@ -268,9 +241,9 @@ func AddToolPriced[In any](h *Harness, tool *mcp.Tool, price PriceFunc[In],
 	if tool.Meta == nil {
 		tool.Meta = mcp.Meta{}
 	}
-	if _, fixed := tool.Meta[PriceMetaKey]; !fixed {
-		if _, marked := tool.Meta[PricingMetaKey]; !marked {
-			tool.Meta[PricingMetaKey] = "dynamic"
+	if _, fixed := tool.Meta[brmcp.PriceMetaKey]; !fixed {
+		if _, marked := tool.Meta[brmcp.PricingMetaKey]; !marked {
+			tool.Meta[brmcp.PricingMetaKey] = "dynamic"
 		}
 	}
 	h.mu.Lock()
@@ -286,7 +259,7 @@ func AddToolPriced[In any](h *Harness, tool *mcp.Tool, price PriceFunc[In],
 				var key string
 				var rec *callRecord
 				if req != nil && req.Params != nil {
-					if v, ok := req.Params.Meta[CallKeyMetaKey].(string); ok && len(v) >= 8 && len(v) <= 128 {
+					if v, ok := req.Params.Meta[brmcp.CallKeyMetaKey].(string); ok && len(v) >= 8 && len(v) <= 128 {
 						key = peer + "|" + v
 					}
 				}
@@ -357,13 +330,13 @@ func ChargedAtoms(ctx context.Context) int64 {
 }
 
 // charge debits the call price, or reports what payment is missing.
-func (h *Harness) charge(_ context.Context, tool, peer string, price int64) *PaymentRequired {
+func (h *Harness) charge(_ context.Context, tool, peer string, price int64) *brmcp.PaymentRequired {
 	err := h.billing.Debit(peer, price)
 	if err == nil {
 		return nil
 	}
 	balance := h.billing.Balance(peer)
-	return &PaymentRequired{
+	return &brmcp.PaymentRequired{
 		Error:          "payment_required",
 		Tool:           tool,
 		PriceAtoms:     price,
@@ -373,7 +346,7 @@ func (h *Harness) charge(_ context.Context, tool, peer string, price int64) *Pay
 	}
 }
 
-func paymentRequiredResult(pr *PaymentRequired) *mcp.CallToolResult {
+func paymentRequiredResult(pr *brmcp.PaymentRequired) *mcp.CallToolResult {
 	raw, err := json.Marshal(pr)
 	if err != nil {
 		raw = []byte(`{"error":"payment_required"}`)

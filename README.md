@@ -22,10 +22,13 @@ Why Bison Relay instead of HTTPS:
 
 - `wire/` - the envelope codec: framing, chunking, reassembly, deadlines.
   See WIRE.md for the byte-level specification.
-- `transport.go` - the MCP go-sdk custom transport over an abstract private
-  message send/receive pair, with per-session routing.
-- `harness.go`, `ledger.go`, `bot.go` - the serving harness: allowlist,
-  rate limiting, paid tools, tip settlement, bisonbotkit lifecycle.
+- the root package - the protocol surface both ends share: the MCP go-sdk
+  custom transport over an abstract private message send/receive pair with
+  per-session routing, the envelope predicate, and the payment metadata.
+- `server/` - the serving harness: allowlist, rate limiting, paid tools,
+  the prepaid ledger, tip settlement, bisonbotkit lifecycle.
+- `brmcptest/` - an in-memory PM fabric for testing endpoints without a
+  relay.
 - `cmd/brmcp-serve` - a runnable example service with a free tool and a paid
   tool. Copy its shape to build your own service.
 
@@ -52,7 +55,7 @@ The allowlist is default-deny: with no uids listed, every caller is refused.
 
 Registering your own tools is one call each:
 
-    brmcp.AddTool(h, &mcp.Tool{Name: "mytool", Description: "..."},
+    server.AddTool(h, &mcp.Tool{Name: "mytool", Description: "..."},
         priceAtoms, func(ctx context.Context, peer string, in Args) (any, error) {
             // peer is the caller's 64-hex Bison Relay uid.
             return result, nil

@@ -2,10 +2,6 @@
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
-// Package brmcp carries Model Context Protocol sessions over Bison Relay
-// private messages. It binds the MCP go-sdk's Transport contract to an
-// abstract PM send/receive pair, so the same code serves both a
-// bisonbotkit-backed bot process and an embedded Bison Relay client.
 package brmcp
 
 import (
