@@ -12,7 +12,7 @@
 // IsEnvelope, and the payment metadata (PriceMetaKey, PricingMetaKey,
 // CallKeyMetaKey, PaymentRequired). The roles build on it:
 //
-//   - wire holds the byte-level envelope codec (see WIRE.md).
+//   - wire holds the byte-level envelope codec (see docs/WIRE.md).
 //   - server is the serving harness: default-deny authorization, rate
 //     limiting, priced tools, the prepaid ledger, and bisonbotkit glue.
 //   - bridge is the client bridge: local MCP endpoints that mirror remote

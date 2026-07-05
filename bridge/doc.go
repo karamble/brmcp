@@ -15,5 +15,5 @@
 // payment_required refusals through a host-supplied Payer. Hosts embed the
 // bridge by wiring a brmcp.PMSender, feeding inbound private messages to
 // HandlePM, and implementing Payer over their payment rail (TipMatcher
-// helps hosts built on Bison Relay's tip notifications). See BRIDGE.md.
+// helps hosts built on Bison Relay's tip notifications). See docs/BRIDGE.md.
 package bridge

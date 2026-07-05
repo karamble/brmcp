@@ -31,7 +31,7 @@ The two ends and the path between them:
 ## Repository layout
 
 - `wire/` - the envelope codec: framing, chunking, reassembly, deadlines.
-  See WIRE.md for the byte-level specification.
+  See docs/WIRE.md for the byte-level specification.
 - the root package - the protocol surface both ends share: the MCP go-sdk
   custom transport over an abstract private message send/receive pair with
   per-session routing, the envelope predicate, and the payment metadata.
@@ -39,11 +39,14 @@ The two ends and the path between them:
   the prepaid ledger, tip settlement, bisonbotkit lifecycle.
 - `bridge/` - the client bridge: per-bot local MCP endpoints mirroring
   remote tools, the spending policy (caps, approval/autopay), payment
-  settlement through a host-supplied rail. See BRIDGE.md.
+  settlement through a host-supplied rail. See docs/BRIDGE.md.
 - `brmcptest/` - an in-memory PM fabric for testing endpoints without a
   relay.
 - `cmd/brmcp-serve` - a runnable example service with a free tool and a paid
   tool. Copy its shape to build your own service.
+- `docs/` - WIRE.md (the byte-level wire specification), BRIDGE.md (the
+  bridge host guide), SECURITY.md (the threat model), and WHITEPAPER.md
+  (the design paper).
 
 ## Serving tools
 
@@ -86,7 +89,7 @@ daemon embeds to expose a local streamable-HTTP MCP endpoint per bot
 relays the session over Bison Relay and pays for tools by tip under
 user-configured caps, either unattended or after per-payment approval.
 brclientd is the reference host; embedding it in another daemon takes a PM
-sender, a PM feed, and a payment hook - see BRIDGE.md.
+sender, a PM feed, and a payment hook - see docs/BRIDGE.md.
 
 ## Payments
 
