@@ -4,6 +4,12 @@
 
 package brmcp
 
+import (
+	"encoding/json"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
 // PriceMetaKey is the tool _meta key advertising the per-call price in
 // atoms, visible to clients in tools/list.
 const PriceMetaKey = "brmcp/priceAtoms"
@@ -31,6 +37,25 @@ type PaymentRequired struct {
 	BalanceAtoms   int64    `json:"balanceAtoms"`
 	ShortfallAtoms int64    `json:"shortfallAtoms"`
 	AcceptedRails  []string `json:"acceptedRails"`
+}
+
+// ParsePaymentRequired sniffs a tool error result for the payment_required
+// JSON body, returning nil when the result is not a payment refusal.
+func ParsePaymentRequired(res *mcp.CallToolResult) *PaymentRequired {
+	if res == nil || !res.IsError {
+		return nil
+	}
+	for _, c := range res.Content {
+		tc, ok := c.(*mcp.TextContent)
+		if !ok {
+			continue
+		}
+		var pr PaymentRequired
+		if err := json.Unmarshal([]byte(tc.Text), &pr); err == nil && pr.Error == "payment_required" {
+			return &pr
+		}
+	}
+	return nil
 }
 
 // SampleEnvelope is a representative v1 wire frame. Hosts that let users
