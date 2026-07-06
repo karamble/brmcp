@@ -89,12 +89,12 @@ func TestFederationE2E(t *testing.T) {
 	if err := fx.call(adminA, "verify_peer", map[string]any{"uid": dirBUID}, nil); err == nil {
 		t.Fatal("snapshot verified against the wrong key")
 	}
-	var leads []directory.Lead
-	if err := fx.call(adminA, "leads", nil, &leads); err != nil {
+	var ll directory.LeadListOut
+	if err := fx.call(adminA, "leads", nil, &ll); err != nil {
 		t.Fatal(err)
 	}
-	if len(leads) != 0 {
-		t.Fatalf("leads from an unverified snapshot: %+v", leads)
+	if len(ll.Leads) != 0 {
+		t.Fatalf("leads from an unverified snapshot: %+v", ll)
 	}
 
 	// The real key: verification yields exactly one lead (the provider;
@@ -114,12 +114,12 @@ func TestFederationE2E(t *testing.T) {
 	if vr["newLeads"] != 1 {
 		t.Fatalf("verify_peer leads: %+v", vr)
 	}
-	if err := fx.call(adminA, "leads", nil, &leads); err != nil {
+	if err := fx.call(adminA, "leads", nil, &ll); err != nil {
 		t.Fatal(err)
 	}
-	if len(leads) != 1 || leads[0].ProviderUID != providerUID ||
-		leads[0].PeerUID != dirBUID || leads[0].State != directory.LeadNew {
-		t.Fatalf("lead wrong: %+v", leads)
+	if len(ll.Leads) != 1 || ll.Leads[0].ProviderUID != providerUID ||
+		ll.Leads[0].PeerUID != dirBUID || ll.Leads[0].State != directory.LeadNew {
+		t.Fatalf("lead wrong: %+v", ll)
 	}
 
 	// The provider runs a Registrant that accepts invites from A and
@@ -155,11 +155,11 @@ func TestFederationE2E(t *testing.T) {
 	if st.State != directory.StateListed {
 		t.Fatalf("approve on A failed: %+v", st)
 	}
-	if err := fx.call(adminA, "leads", nil, &leads); err != nil {
+	if err := fx.call(adminA, "leads", nil, &ll); err != nil {
 		t.Fatal(err)
 	}
-	if len(leads) != 1 || leads[0].State != directory.LeadConverted {
-		t.Fatalf("lead not converted: %+v", leads)
+	if len(ll.Leads) != 1 || ll.Leads[0].State != directory.LeadConverted {
+		t.Fatalf("lead not converted: %+v", ll)
 	}
 
 	// Verified independently on both directories: two paid executions.
@@ -263,15 +263,15 @@ func TestFederationIntroducerFallback(t *testing.T) {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		var leads []directory.Lead
-		if err := fx.call(adminA, "leads", nil, &leads); err != nil {
+		var ll directory.LeadListOut
+		if err := fx.call(adminA, "leads", nil, &ll); err != nil {
 			t.Fatal(err)
 		}
-		if len(leads) == 1 && leads[0].State == directory.LeadConverted {
+		if len(ll.Leads) == 1 && ll.Leads[0].State == directory.LeadConverted {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("lead never converted: %+v", leads)
+			t.Fatalf("lead never converted: %+v", ll)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

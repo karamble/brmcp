@@ -425,11 +425,12 @@ func TestRegistrationE2E(t *testing.T) {
 
 	// Approve as admin.
 	admin := fx.dial(adminUID)
-	var pend []directory.PendingOut
+	var pend directory.PendingListOut
 	if err := fx.call(admin, "pending_registrations", nil, &pend); err != nil {
 		t.Fatal(err)
 	}
-	if len(pend) != 1 || pend[0].UID != providerUID || pend[0].TestOutcome != "ok" {
+	if len(pend.Registrations) != 1 || pend.Registrations[0].UID != providerUID ||
+		pend.Registrations[0].TestOutcome != "ok" {
 		t.Fatalf("pending queue wrong: %+v", pend)
 	}
 	if err := fx.call(admin, "approve", map[string]any{"uid": providerUID}, &st); err != nil {
