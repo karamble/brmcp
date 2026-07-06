@@ -61,7 +61,7 @@ func TestFederationE2E(t *testing.T) {
 		directory.IntroducerFunc(func(context.Context, string, string) error {
 			t.Error("peer directory introduced unexpectedly")
 			return nil
-		}))
+		}), nil)
 	t.Cleanup(func() { svcB.Close() })
 	// A pays B for snapshots over this rail.
 	fx.payer.setRail(dirBUID, svcB.Harness())
@@ -185,7 +185,7 @@ func TestFederationIntroducerFallback(t *testing.T) {
 	lonerH, lonerRouter := newProviderHarness(t, fx.fab, fx.ctx, lonerUID, lonerExecs)
 	payerB := &testPayer{rails: map[string]*server.Harness{lonerUID: lonerH}, payer: dirBUID}
 	svcB := startDirectoryAt(t, fx.ctx, fx.fab, fx.clk, payerB, t.TempDir(), dirBUID,
-		directory.IntroducerFunc(func(context.Context, string, string) error { return nil }))
+		directory.IntroducerFunc(func(context.Context, string, string) error { return nil }), nil)
 	t.Cleanup(func() { svcB.Close() })
 	fx.payer.setRail(dirBUID, svcB.Harness())
 	fx.payer.setRail(lonerUID, lonerH)

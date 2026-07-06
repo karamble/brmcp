@@ -42,6 +42,8 @@ fee schedule, not by an allowlist.
   reports the uncapped count.
 - `get_provider` (free) - one listing, including the crawled catalog
   verbatim and the freshness stamps.
+- `introduce` (free) - in: `{uid}`. The directory sends the caller a Bison
+  Relay KX suggestion toward a LISTED provider (see Introductions below).
 - `list_categories` (free) - listed providers histogrammed by tag.
 - `policy` (free) - the directory's terms: fees, the test budget ceiling,
   expiry days, the snapshot price, and the hex ed25519 snapshot key.
@@ -92,6 +94,30 @@ generatedAt, listings[]}` with listings ordered by uid. The signing key is
 directory-local (Bison Relay's client API cannot sign arbitrary data) and
 is advertised by the `policy` tool; the key from a curated peer record is
 the only trust root a verifier MUST accept.
+
+## Introductions
+
+Finding a provider is not yet reaching it: calls need a key exchange. The
+directory sits between both parties as a KX'd contact of each, so it can
+introduce them two ways:
+
+- Pull (always available): the consumer's client requests a transitive KX
+  through the directory as mediator (brclient: `/mi <directory> <uid>`).
+  The directory's daemon mediates automatically; no directory code is
+  involved.
+- Push (`introduce`): the caller asks the directory, and the directory
+  sends the caller's client a standard KX suggestion naming the provider.
+  The receiving side MUST still accept it - in brclient via the prompted
+  `/mi` command, in graphical clients via their accept action - and
+  accepting completes the transitive exchange back through the directory
+  automatically. Declining is fine and costs nothing.
+
+The directory only introduces callers to live listings: it vouches for
+what it suggests, and refuses unknown uids, pending registrations, and
+self-introductions. Whether `introduce` is available depends on the host
+daemon exposing the client library's SuggestKX; brclientd does (its status
+server), stock brclient does not, and an unsupported directory answers the
+tool with a clear refusal.
 
 ## Federation
 
@@ -178,6 +204,10 @@ requiring judgment waits in a queue for the admin tools.
   the auto-fund policy; the invite channel is otherwise a spam vector for
   the operator's attention (never for funds, unless auto-funding is opened
   wide).
+- Introductions are caller-requested but arrive at the caller's client as
+  ordinary KX suggestions; acceptance always stays with the receiver, and
+  the listed-only rule keeps the directory from being used as a generic
+  introduction spammer.
 
 ## Limitations
 

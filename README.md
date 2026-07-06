@@ -104,7 +104,9 @@ paid call of a provider-nominated tool), an operator approves listings
 through uid-gated admin tools, and consumers search the verified index or
 buy the signed snapshot. Directories federate by buying each other's
 snapshots and re-verifying every entry first-hand; providers opt in per
-directory with a policy-capped auto-funder. Registration, search,
+directory with a policy-capped auto-funder. The introduce tool closes the
+last gap: the directory pushes the caller a KX suggestion toward a listed
+provider, and accepting it completes the exchange through the directory. Registration, search,
 federation, and administration are all ordinary MCP tool calls - no wire
 surface exists beyond the envelope. See docs/DIRECTORY.md for the
 contract, and the `directory` block in brmcp-serve's config for the

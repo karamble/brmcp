@@ -12,15 +12,20 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -130,6 +135,66 @@ func (b *backend) Introduce(ctx context.Context, mediatorUID, targetUID string) 
 	return bot.MediateKX(ctx, mediatorUID, targetUID)
 }
 
+// statusClient pushes KX suggestions through brclientd's status server,
+// which exposes the client library's SuggestKX (clientrpc does not). The
+// same mTLS chain the clientrpc connection uses authenticates here.
+type statusClient struct {
+	base string
+	hc   *http.Client
+}
+
+func newStatusClient(baseURL, serverCertPath, clientCertPath, clientKeyPath string) (*statusClient, error) {
+	serverPEM, err := os.ReadFile(serverCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read server cert: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(serverPEM) {
+		return nil, fmt.Errorf("parse server cert at %s", serverCertPath)
+	}
+	clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load client cert pair: %w", err)
+	}
+	return &statusClient{
+		base: strings.TrimRight(baseURL, "/"),
+		hc: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{
+				RootCAs:      pool,
+				Certificates: []tls.Certificate{clientCert},
+			}},
+		},
+	}, nil
+}
+
+// Suggest implements directory.Suggester via POST /contacts/suggest-kx.
+func (s *statusClient) Suggest(ctx context.Context, inviteeUID, targetUID string) error {
+	body, err := json.Marshal(struct {
+		Invitee string `json:"invitee"`
+		Target  string `json:"target"`
+	}{Invitee: inviteeUID, Target: targetUID})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		s.base+"/contacts/suggest-kx", strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := s.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent && res.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return fmt.Errorf("status %d: %s", res.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	return nil
+}
+
 func main() {
 	defaultDir := dcrutil.AppDataDir("brmcpdir", false)
 	datadir := flag.String("datadir", defaultDir, "data directory (bot config, policy, index, journals)")
@@ -152,11 +217,28 @@ func main() {
 	}
 
 	be := &backend{matcher: bridge.NewTipMatcher()}
+
+	// Introductions ride brclientd's status server; without it (stock
+	// brclient) the introduce tool reports itself unsupported.
+	var suggester directory.Suggester
+	if statusURL := botCfg.ExtraConfig["brstatusurl"]; statusURL != "" {
+		sc, err := newStatusClient(statusURL,
+			botCfg.ServerCertPath, botCfg.ClientCertPath, botCfg.ClientKeyPath)
+		if err != nil {
+			log.Fatalf("brstatusurl configured but unusable: %v", err)
+		}
+		suggester = sc
+		log.Printf("introductions enabled via %s", statusURL)
+	} else {
+		log.Printf("brstatusurl not set: the introduce tool is disabled")
+	}
+
 	svc, err := directory.New(directory.Config{
 		DataDir:    *datadir,
 		Policy:     policy,
 		Payer:      be,
 		Introducer: be,
+		Suggester:  suggester,
 		Logf:       log.Printf,
 	})
 	if err != nil {
