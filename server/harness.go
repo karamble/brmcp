@@ -47,6 +47,12 @@ type HarnessConfig struct {
 	Billing Billing
 	// CallsPerMinute rate-limits each caller. Zero selects 30.
 	CallsPerMinute int
+	// ToolVisible, when non-nil, filters which registered tools exist for
+	// a caller: a tool for which it returns false is absent from that
+	// caller's server entirely (not listed, not callable). Consulted when
+	// the caller's per-peer server is first built, so the predicate must
+	// be stable for the process lifetime.
+	ToolVisible func(peer, tool string) bool
 	// TTL/ChunkSize/Assembler tune the transport (zero = defaults).
 	TTL       time.Duration
 	ChunkSize int
@@ -192,6 +198,9 @@ func (h *Harness) serverFor(peer string) *mcp.Server {
 	}
 	s := mcp.NewServer(h.impl, nil)
 	for _, reg := range h.tools {
+		if h.cfg.ToolVisible != nil && !h.cfg.ToolVisible(peer, reg.name) {
+			continue
+		}
 		reg.register(s, h, peer)
 	}
 	h.servers[peer] = s

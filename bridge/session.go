@@ -142,7 +142,7 @@ func (b *Bridge) passthrough(link *botLink, tool string) mcp.ToolHandler {
 				}
 				return nil, err
 			}
-			pr := parsePaymentRequired(res)
+			pr := brmcp.ParsePaymentRequired(res)
 			if pr == nil {
 				return res, nil
 			}
@@ -169,23 +169,4 @@ func (b *Bridge) passthrough(link *botLink, tool string) mcp.ToolHandler {
 			paid = true
 		}
 	}
-}
-
-// parsePaymentRequired sniffs a tool error result for the brmcp
-// payment_required JSON body.
-func parsePaymentRequired(res *mcp.CallToolResult) *brmcp.PaymentRequired {
-	if res == nil || !res.IsError {
-		return nil
-	}
-	for _, c := range res.Content {
-		tc, ok := c.(*mcp.TextContent)
-		if !ok {
-			continue
-		}
-		var pr brmcp.PaymentRequired
-		if err := json.Unmarshal([]byte(tc.Text), &pr); err == nil && pr.Error == "payment_required" {
-			return &pr
-		}
-	}
-	return nil
 }

@@ -15,6 +15,8 @@ import (
 	"github.com/companyzero/bisonrelay/clientrpc/types"
 	kit "github.com/vctt94/bisonbotkit"
 	kitconfig "github.com/vctt94/bisonbotkit/config"
+
+	"github.com/karamble/brmcp"
 )
 
 // matomsPerAtom converts Bison Relay's milliatom tip amounts to atoms.
@@ -47,11 +49,30 @@ func (bb *botBackend) SendPM(ctx context.Context, peer, text string) error {
 	return bot.SendPM(ctx, peer, text)
 }
 
+// RunBotHooks lets a host observe what RunBot otherwise consumes alone,
+// e.g. to drive a directory.Registrant beside the harness. Every hook may
+// be nil.
+type RunBotHooks struct {
+	// OnRouter delivers the started router once, before any traffic
+	// flows, so the host can dial out over the bot's own identity.
+	OnRouter func(router *brmcp.Router)
+	// OnBot delivers the current bot on each (re)connect and nil when
+	// the connection is lost.
+	OnBot func(bot *kit.Bot)
+	// OnTipProgress sees every tip progress event before it is acked.
+	OnTipProgress func(ev *types.TipProgressEvent)
+}
+
 // RunBot serves the harness over a bisonbotkit bot until ctx ends. It owns
 // the notification channels, credits tips from allowed peers into the
 // ledger, and recreates the bot whenever its clientrpc websocket dies (the
 // kit's Run returns with it).
 func RunBot(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig) error {
+	return RunBotHooked(ctx, h, cfg, RunBotHooks{})
+}
+
+// RunBotHooked is RunBot with host observation hooks.
+func RunBotHooked(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig, hooks RunBotHooks) error {
 	pmChan := make(chan *types.ReceivedPM, 64)
 	tipChan := make(chan *types.ReceivedTip, 16)
 	tipProgressChan := make(chan *types.TipProgressEvent, 16)
@@ -72,6 +93,9 @@ func RunBot(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig) error {
 
 	backend := &botBackend{}
 	router := h.Start(ctx, backend)
+	if hooks.OnRouter != nil {
+		hooks.OnRouter(router)
+	}
 
 	go func() {
 		for {
@@ -132,6 +156,9 @@ func RunBot(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig) error {
 				if ev == nil {
 					continue
 				}
+				if hooks.OnTipProgress != nil {
+					hooks.OnTipProgress(ev)
+				}
 				if bot := backend.current(); bot != nil {
 					if err := bot.AckTipProgress(ctx, ev.SequenceId); err != nil {
 						h.logf("brmcp: ack tip progress %d: %v", ev.SequenceId, err)
@@ -147,8 +174,14 @@ func RunBot(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig) error {
 			h.logf("brmcp: bot init: %v (retrying)", err)
 		} else {
 			backend.set(bot)
+			if hooks.OnBot != nil {
+				hooks.OnBot(bot)
+			}
 			err = bot.Run(ctx)
 			backend.set(nil)
+			if hooks.OnBot != nil {
+				hooks.OnBot(nil)
+			}
 			bot.Close()
 			if ctx.Err() != nil {
 				return ctx.Err()

@@ -40,13 +40,18 @@ The two ends and the path between them:
 - `bridge/` - the client bridge: per-bot local MCP endpoints mirroring
   remote tools, the spending policy (caps, approval/autopay), payment
   settlement through a host-supplied rail. See docs/BRIDGE.md.
+- `directory/` - the yellow pages: a verifying directory of providers
+  (crawled catalogs, provider-funded live tests, signed snapshots,
+  verify-don't-trust federation) plus the provider-side Registrant. See
+  docs/DIRECTORY.md.
 - `brmcptest/` - an in-memory PM fabric for testing endpoints without a
   relay.
 - `cmd/brmcp-serve` - a runnable example service with a free tool and a paid
   tool. Copy its shape to build your own service.
+- `cmd/brmcpdir` - the runnable directory bot.
 - `docs/` - WIRE.md (the byte-level wire specification), BRIDGE.md (the
-  bridge host guide), SECURITY.md (the threat model), and WHITEPAPER.md
-  (the design paper).
+  bridge host guide), DIRECTORY.md (the directory contract), SECURITY.md
+  (the threat model), and WHITEPAPER.md (the design paper).
 
 ## Serving tools
 
@@ -90,6 +95,20 @@ relays the session over Bison Relay and pays for tools by tip under
 user-configured caps, either unattended or after per-payment approval.
 brclientd is the reference host; embedding it in another daemon takes a PM
 sender, a PM feed, and a payment hook - see docs/BRIDGE.md.
+
+## Finding tools
+
+`cmd/brmcpdir` runs a directory: providers register and fund a live
+verification test (the directory crawls their catalog and executes one
+paid call of a provider-nominated tool), an operator approves listings
+through uid-gated admin tools, and consumers search the verified index or
+buy the signed snapshot. Directories federate by buying each other's
+snapshots and re-verifying every entry first-hand; providers opt in per
+directory with a policy-capped auto-funder. Registration, search,
+federation, and administration are all ordinary MCP tool calls - no wire
+surface exists beyond the envelope. See docs/DIRECTORY.md for the
+contract, and the `directory` block in brmcp-serve's config for the
+provider side.
 
 ## Payments
 
