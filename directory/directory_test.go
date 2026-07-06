@@ -425,11 +425,12 @@ func TestRegistrationE2E(t *testing.T) {
 
 	// Approve as admin.
 	admin := fx.dial(adminUID)
-	var pend []directory.PendingOut
+	var pend directory.PendingListOut
 	if err := fx.call(admin, "pending_registrations", nil, &pend); err != nil {
 		t.Fatal(err)
 	}
-	if len(pend) != 1 || pend[0].UID != providerUID || pend[0].TestOutcome != "ok" {
+	if len(pend.Registrations) != 1 || pend.Registrations[0].UID != providerUID ||
+		pend.Registrations[0].TestOutcome != "ok" {
 		t.Fatalf("pending queue wrong: %+v", pend)
 	}
 	if err := fx.call(admin, "approve", map[string]any{"uid": providerUID}, &st); err != nil {
@@ -455,14 +456,15 @@ func TestRegistrationE2E(t *testing.T) {
 		t.Fatalf("tags not normalized: %+v", hit.Tags)
 	}
 
-	// Price ceiling filters; dynamic tools are excluded under a ceiling.
-	if err := fx.call(consumer, "search", map[string]any{"maxPriceAtoms": 100}, &sr); err != nil {
+	// Price ceiling filters: the free echo passes, the 500-atom tool and
+	// dynamic pricing do not. Decode into a fresh value - omitempty zeros
+	// merged over a reused struct would fake stale prices.
+	var ceil directory.SearchOut
+	if err := fx.call(consumer, "search", map[string]any{"maxPriceAtoms": 100}, &ceil); err != nil {
 		t.Fatal(err)
 	}
-	for _, h := range sr.Hits {
-		if h.PriceAtoms > 100 || h.Pricing == "dynamic" {
-			t.Fatalf("ceiling leak: %+v", h)
-		}
+	if len(ceil.Hits) != 1 || ceil.Hits[0].Tool != "echo" || ceil.Hits[0].PriceAtoms != 0 {
+		t.Fatalf("ceiling result wrong: %+v", ceil)
 	}
 
 	// get_provider returns the crawled catalog verbatim.

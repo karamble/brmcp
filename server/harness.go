@@ -207,18 +207,19 @@ func (h *Harness) serverFor(peer string) *mcp.Server {
 	return s
 }
 
-// AddTool registers a tool with a fixed price. priceAtoms of zero makes it
-// free; a positive price is advertised in _meta and enforced against the
-// caller's balance before the handler runs.
+// AddTool registers a tool with a fixed price, advertised in _meta and,
+// when positive, enforced against the caller's balance before the handler
+// runs. Zero is advertised too, so free tools read as free rather than
+// dynamically priced. The handler's result must marshal to a JSON object
+// (it becomes the call's structured content); bare arrays or primitives
+// are rejected by strict MCP clients.
 func AddTool[In any](h *Harness, tool *mcp.Tool, priceAtoms int64,
 	fn func(ctx context.Context, peer string, in In) (any, error)) {
 
-	if priceAtoms > 0 {
-		if tool.Meta == nil {
-			tool.Meta = mcp.Meta{}
-		}
-		tool.Meta[brmcp.PriceMetaKey] = priceAtoms
+	if tool.Meta == nil {
+		tool.Meta = mcp.Meta{}
 	}
+	tool.Meta[brmcp.PriceMetaKey] = priceAtoms
 	AddToolPriced(h, tool, func(context.Context, string, In) (int64, error) {
 		return priceAtoms, nil
 	}, fn)

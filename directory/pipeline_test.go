@@ -104,11 +104,11 @@ func TestRenewalSkipsReview(t *testing.T) {
 	if got := fx.execs.Load(); got != 2 {
 		t.Fatalf("test executions %d, want 2 (initial + renewal)", got)
 	}
-	var pend []directory.PendingOut
+	var pend directory.PendingListOut
 	if err := fx.call(admin, "pending_registrations", nil, &pend); err != nil {
 		t.Fatal(err)
 	}
-	if len(pend) != 0 {
+	if len(pend.Registrations) != 0 {
 		t.Fatalf("renewal parked for review: %+v", pend)
 	}
 }

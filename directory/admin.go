@@ -90,6 +90,17 @@ type PendingOut struct {
 	CreatedAt   int64    `json:"createdAt"`
 }
 
+// PendingListOut wraps the review queue: MCP structured results must be
+// JSON objects, never bare arrays.
+type PendingListOut struct {
+	Registrations []PendingOut `json:"registrations"`
+}
+
+// LeadListOut wraps the lead list for the same reason.
+type LeadListOut struct {
+	Leads []Lead `json:"leads"`
+}
+
 // RejectIn names a registration and the reason surfaced to the provider.
 type RejectIn struct {
 	UID    string `json:"uid"`
@@ -142,7 +153,7 @@ func (s *Service) registerAdminTools() {
 					PaidAtoms: r.PaidAtoms, CreatedAt: r.CreatedAt,
 				})
 			}
-			return out, nil
+			return PendingListOut{Registrations: out}, nil
 		})
 
 	adminTool(s, "approve",
@@ -173,7 +184,7 @@ func (s *Service) registerAdminTools() {
 				out = append(out, l)
 			}
 			sort.Slice(out, func(i, j int) bool { return out[i].ProviderUID < out[j].ProviderUID })
-			return out, nil
+			return LeadListOut{Leads: out}, nil
 		})
 
 	adminTool(s, "pursue_lead",
