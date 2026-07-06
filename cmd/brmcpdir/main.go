@@ -264,7 +264,7 @@ func main() {
 
 	router := svc.Start(ctx, be)
 	log.Printf("directory %q serving over Bison Relay via %s (snapshot key %s)",
-		policy.Name, botCfg.RPCURL, svc.PublicKey()[:16])
+		svc.Name(), botCfg.RPCURL, svc.PublicKey()[:16])
 
 	// Envelope frames feed the router; everything else is ignored - the
 	// directory speaks nothing but MCP.

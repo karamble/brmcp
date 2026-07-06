@@ -308,6 +308,9 @@ func (s *Service) PublicKey() string {
 	return s.signer.sign(nil).Pub
 }
 
+// Name returns the directory's effective display name (defaults applied).
+func (s *Service) Name() string { return s.policy.Name }
+
 // SetSelfUID records the directory's own Bison Relay uid once the host
 // learns it (the identity is only readable from a connected client).
 // Config.SelfUID seeds the initial value.
