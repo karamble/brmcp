@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -59,6 +60,34 @@ func (s *Service) registerPublicTools() {
 			return nil, errors.New("no listing for that uid")
 		}
 		return providerOut(in.UID, e.Live), nil
+	})
+
+	server.AddTool(h, &mcp.Tool{
+		Name: "introduce",
+		Description: "Ask the directory to introduce you to a listed provider: " +
+			"it sends your client a Bison Relay KX suggestion toward the " +
+			"provider. Your side must still accept the suggestion; accepting " +
+			"completes the key exchange through the directory.",
+	}, 0, func(ctx context.Context, peer string, in IntroduceIn) (any, error) {
+		if s.cfg.Suggester == nil {
+			return nil, errors.New("this directory does not support introductions")
+		}
+		if in.UID == peer {
+			return nil, errors.New("cannot introduce a caller to itself")
+		}
+		// Only verified listings: the directory vouches for what it
+		// suggests.
+		e, ok := s.index.get(in.UID)
+		if !ok || e.Live == nil {
+			return nil, errors.New("no listing for that uid")
+		}
+		if err := s.cfg.Suggester.Suggest(ctx, peer, in.UID); err != nil {
+			return nil, fmt.Errorf("suggest: %w", err)
+		}
+		return IntroduceOut{
+			Suggested: true,
+			Note:      "accept the KX suggestion in your client to complete the exchange",
+		}, nil
 	})
 
 	server.AddTool(h, &mcp.Tool{

@@ -74,6 +74,19 @@ type InviteOut struct {
 	Note     string `json:"note,omitempty"`
 }
 
+// IntroduceIn asks the directory to introduce the caller to a listed
+// provider.
+type IntroduceIn struct {
+	UID string `json:"uid"`
+}
+
+// IntroduceOut acknowledges that the KX suggestion was sent; the caller's
+// client still decides whether to accept it.
+type IntroduceOut struct {
+	Suggested bool   `json:"suggested"`
+	Note      string `json:"note,omitempty"`
+}
+
 // SearchIn queries the tool-level index. Query matches tool names and
 // descriptions case-insensitively; Tags must all be present on the
 // listing; MaxPriceAtoms filters out tools with a higher advertised fixed

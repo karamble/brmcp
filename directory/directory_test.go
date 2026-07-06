@@ -120,6 +120,24 @@ func (p *testPayer) callCount() int {
 	return p.calls
 }
 
+// suggestLog records KX suggestions the directory pushed.
+type suggestLog struct {
+	mu    sync.Mutex
+	pairs [][2]string // {invitee, target}
+}
+
+func (l *suggestLog) record(invitee, target string) {
+	l.mu.Lock()
+	l.pairs = append(l.pairs, [2]string{invitee, target})
+	l.mu.Unlock()
+}
+
+func (l *suggestLog) all() [][2]string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([][2]string(nil), l.pairs...)
+}
+
 // fixture wires one directory, one healthy provider, and the fabric.
 type fixture struct {
 	t          *testing.T
@@ -132,6 +150,7 @@ type fixture struct {
 	provRouter *brmcp.Router
 	execs      *atomic.Int64
 	introCalls *atomic.Int64
+	suggests   *suggestLog
 	dataDir    string
 }
 
@@ -149,14 +168,14 @@ func startDirectory(t *testing.T, ctx context.Context, f *brmcptest.Fabric,
 	intro := directory.IntroducerFunc(func(context.Context, string, string) error {
 		return errors.New("no introducer in this test")
 	})
-	return startDirectoryAt(t, ctx, f, clk, payer, dataDir, dirUID, intro)
+	return startDirectoryAt(t, ctx, f, clk, payer, dataDir, dirUID, intro, nil)
 }
 
 // startDirectoryAt starts a directory Service on an arbitrary uid, e.g. a
 // federation peer.
 func startDirectoryAt(t *testing.T, ctx context.Context, f *brmcptest.Fabric,
 	clk *testClock, payer *testPayer, dataDir, selfUID string,
-	intro directory.Introducer) *directory.Service {
+	intro directory.Introducer, sugg directory.Suggester) *directory.Service {
 	t.Helper()
 	svc, err := directory.New(directory.Config{
 		DataDir: dataDir,
@@ -171,6 +190,7 @@ func startDirectoryAt(t *testing.T, ctx context.Context, f *brmcptest.Fabric,
 		},
 		Payer:      payer,
 		Introducer: intro,
+		Suggester:  sugg,
 		SelfUID:    selfUID,
 		Clock:      clk,
 		Logf:       t.Logf,
@@ -234,7 +254,12 @@ func newFixture(t *testing.T) *fixture {
 		introCalls.Add(1)
 		return nil
 	})
-	svc := startDirectoryAt(t, ctx, f, clk, payer, dataDir, dirUID, intro)
+	suggests := &suggestLog{}
+	sugg := directory.SuggesterFunc(func(_ context.Context, invitee, target string) error {
+		suggests.record(invitee, target)
+		return nil
+	})
+	svc := startDirectoryAt(t, ctx, f, clk, payer, dataDir, dirUID, intro, sugg)
 
 	t.Cleanup(func() {
 		cancel()
@@ -244,7 +269,7 @@ func newFixture(t *testing.T) *fixture {
 	return &fixture{
 		t: t, ctx: ctx, fab: f, clk: clk, svc: svc, payer: payer,
 		provider: provider, provRouter: provRouter, execs: execs,
-		introCalls: introCalls, dataDir: dataDir,
+		introCalls: introCalls, suggests: suggests, dataDir: dataDir,
 	}
 }
 

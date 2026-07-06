@@ -47,6 +47,22 @@ func (f IntroducerFunc) Introduce(ctx context.Context, mediatorUID, targetUID st
 	return f(ctx, mediatorUID, targetUID)
 }
 
+// Suggester sends invitee a Bison Relay KX suggestion toward target, so the
+// introduce tool can connect a caller with a listed provider. Both must be
+// the directory daemon's KX'd contacts; accepting the suggestion is the
+// invitee's choice and completes through the directory as mediator.
+type Suggester interface {
+	Suggest(ctx context.Context, inviteeUID, targetUID string) error
+}
+
+// SuggesterFunc adapts a function to Suggester.
+type SuggesterFunc func(ctx context.Context, inviteeUID, targetUID string) error
+
+// Suggest implements Suggester.
+func (f SuggesterFunc) Suggest(ctx context.Context, inviteeUID, targetUID string) error {
+	return f(ctx, inviteeUID, targetUID)
+}
+
 // Clock abstracts time so expiry, renewal, and payment polls are testable.
 // A nil Config.Clock selects the system clock.
 type Clock interface {
@@ -109,6 +125,9 @@ type Config struct {
 	// Introducer requests transitive KX toward federation leads. May be
 	// nil; pursuing a lead that needs an introduction then fails.
 	Introducer Introducer
+	// Suggester pushes KX suggestions for the introduce tool. May be
+	// nil; the tool then reports introductions as unsupported.
+	Suggester Suggester
 	// SelfUID is the directory's own Bison Relay uid, excluded from
 	// federation leads.
 	SelfUID string
