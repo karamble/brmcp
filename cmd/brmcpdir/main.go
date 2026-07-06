@@ -73,8 +73,10 @@ func loadPolicy(path string) (directory.Policy, error) {
 type backend struct {
 	matcher *bridge.TipMatcher
 
-	mu  sync.Mutex
-	bot *kit.Bot
+	mu   sync.Mutex
+	bot  *kit.Bot
+	uid  string
+	nick string
 }
 
 func (b *backend) current() *kit.Bot {
@@ -87,6 +89,18 @@ func (b *backend) set(bot *kit.Bot) {
 	b.mu.Lock()
 	b.bot = bot
 	b.mu.Unlock()
+}
+
+func (b *backend) setIdentity(uid, nick string) {
+	b.mu.Lock()
+	b.uid, b.nick = uid, nick
+	b.mu.Unlock()
+}
+
+func (b *backend) identity() (uid, nick string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.uid, b.nick
 }
 
 func (b *backend) SendPM(ctx context.Context, peer, text string) error {
@@ -133,6 +147,57 @@ func (b *backend) Introduce(ctx context.Context, mediatorUID, targetUID string) 
 		return errors.New("brmcpdir: bot not connected")
 	}
 	return bot.MediateKX(ctx, mediatorUID, targetUID)
+}
+
+// helpGreeter throttles the plain-chat orientation reply to one per
+// sender per hour.
+type helpGreeter struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+func (g *helpGreeter) should(uid string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	if t, ok := g.last[uid]; ok && now.Sub(t) < time.Hour {
+		return false
+	}
+	if len(g.last) > 1000 {
+		for k, t := range g.last {
+			if now.Sub(t) > time.Hour {
+				delete(g.last, k)
+			}
+		}
+	}
+	g.last[uid] = now
+	return true
+}
+
+// helpText is the orientation message plain-chat senders receive: what
+// the bot is, the live listing count, and how to point an AI agent at it.
+func helpText(be *backend, svc *directory.Service) string {
+	uid, nick := be.identity()
+	if uid == "" {
+		return ""
+	}
+	n := svc.LiveListings()
+	plural := "s"
+	if n == 1 {
+		plural = ""
+	}
+	return fmt.Sprintf(`I am %s, a directory of MCP tool providers on Bison Relay - currently listing %d verified provider%s.
+
+I only speak MCP; connect your AI agent to browse and use the tools:
+
+1. Enable your client's Bison Relay MCP bridge (Decred Pulse: Settings > Bison Relay > AI Agent Access) and add me to the allowed bots:
+%s
+
+2. Point your agent at the bridge endpoint (default port 8891), authorized with your bridge token:
+http://127.0.0.1:8891/mcp/%s
+
+Then: search finds tools (free), introduce connects you with a provider, register lists your own bot, and the policy tool shows my fees.`,
+		nick, n, plural, uid, uid)
 }
 
 // statusClient pushes KX suggestions through brclientd's status server,
@@ -266,8 +331,10 @@ func main() {
 	log.Printf("directory %q serving over Bison Relay via %s (snapshot key %s)",
 		svc.Name(), botCfg.RPCURL, svc.PublicKey()[:16])
 
-	// Envelope frames feed the router; everything else is ignored - the
-	// directory speaks nothing but MCP.
+	// Envelope frames feed the router; plain chat gets one orientation
+	// reply per sender per hour, so a human who DMs the bot learns how to
+	// connect an agent and two auto-repliers can never ping-pong.
+	greeter := &helpGreeter{last: make(map[string]time.Time)}
 	go func() {
 		for {
 			select {
@@ -277,8 +344,18 @@ func main() {
 				if pm == nil || pm.Msg == nil {
 					continue
 				}
+				uid := hex.EncodeToString(pm.Uid)
 				if brmcp.IsEnvelope(pm.Msg.Message) {
-					router.HandlePM(hex.EncodeToString(pm.Uid), pm.Msg.Message)
+					router.HandlePM(uid, pm.Msg.Message)
+					continue
+				}
+				if !greeter.should(uid) {
+					continue
+				}
+				if txt := helpText(be, svc); txt != "" {
+					if err := be.SendPM(ctx, uid, txt); err != nil {
+						log.Printf("help reply to %s: %v", uid[:8], err)
+					}
 				}
 			}
 		}
@@ -361,8 +438,10 @@ func main() {
 			if err := bot.UserPublicIdentity(ctx, &types.PublicIdentityReq{}, &ident); err != nil {
 				log.Printf("read own identity: %v", err)
 			} else {
-				svc.SetSelfUID(hex.EncodeToString(ident.Identity))
-				log.Printf("connected as %q (%s)", ident.Nick, hex.EncodeToString(ident.Identity)[:16])
+				uid := hex.EncodeToString(ident.Identity)
+				svc.SetSelfUID(uid)
+				be.setIdentity(uid, ident.Nick)
+				log.Printf("connected as %q (%s)", ident.Nick, uid[:16])
 			}
 			err = bot.Run(ctx)
 			be.set(nil)

@@ -311,6 +311,17 @@ func (s *Service) PublicKey() string {
 // Name returns the directory's effective display name (defaults applied).
 func (s *Service) Name() string { return s.policy.Name }
 
+// LiveListings counts the currently published providers.
+func (s *Service) LiveListings() int {
+	n := 0
+	for _, e := range s.index.all() {
+		if e.Live != nil {
+			n++
+		}
+	}
+	return n
+}
+
 // SetSelfUID records the directory's own Bison Relay uid once the host
 // learns it (the identity is only readable from a connected client).
 // Config.SelfUID seeds the initial value.
