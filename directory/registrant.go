@@ -151,10 +151,17 @@ func (r *Registrant) RegisterTools(h *server.Harness) {
 	})
 }
 
+// renewAhead is how close to a listing's expiry a proactive Register
+// renews instead of skipping. Registering while listed is a paid renewal
+// (fee plus a fresh verification test), so hosts that Register on every
+// startup must not pay it on every restart.
+const renewAhead = 7 * 24 * time.Hour
+
 // Register submits this provider's registration to a directory, funds the
 // invoice under the AutoFund policy, and reports the follow-up status via
-// Notify. It does not wait for verification to finish; poll my_status (or
-// call Register again) for progress.
+// Notify. A listing that is still live and not within renewAhead of expiry
+// is left alone. It does not wait for verification to finish; poll
+// my_status (or call Register again) for progress.
 func (r *Registrant) Register(ctx context.Context, directoryUID string) error {
 	session, cleanup, err := dialPeer(ctx, r.cfg.Router, r.cfg.Name, directoryUID)
 	if err != nil {
@@ -164,6 +171,13 @@ func (r *Registrant) Register(ctx context.Context, directoryUID string) error {
 	defer cleanup()
 
 	var st StatusOut
+	if err := callDecode(ctx, session, "my_status", struct{}{}, &st); err == nil &&
+		st.State == StateListed &&
+		st.ExpiresAt > r.clk.Now().Add(renewAhead).Unix() {
+		r.notify(directoryUID, st, nil)
+		return nil
+	}
+
 	err = callDecode(ctx, session, "register", RegisterIn{
 		Description: r.cfg.Description,
 		Tags:        r.cfg.Tags,

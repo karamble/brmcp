@@ -151,6 +151,10 @@ Providers integrate the Registrant, which is both roles at once:
   shortfall if the policy allows, and reports through the operator's
   Notify callback. The fund history is persisted before money moves, so a
   crash can only over-count against the monthly cap.
+- Registering while listed is a paid renewal, so a proactive Register
+  first reads `my_status` and leaves a listing alone until it is within a
+  week of expiry - hosts may safely Register on every startup without
+  paying a renewal per restart.
 
 ## Admin surface
 

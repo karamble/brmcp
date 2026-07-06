@@ -114,6 +114,74 @@ func TestRegistrantProactiveRegister(t *testing.T) {
 	}
 }
 
+func TestRegistrantSkipsFreshListing(t *testing.T) {
+	fx := newFixture(t)
+	prov := fx.dialFrom(fx.provRouter, "prov")
+	admin := fx.dial(adminUID)
+	fx.listProvider(prov, admin)
+
+	// A restart-style Register on a fresh listing must not renew: no new
+	// registration, no money moved, the listed status reported as-is.
+	notify := newNotifyLog()
+	reg := fx.newRegistrant(t, directory.AutoFund{
+		Enabled:            true,
+		MaxAtomsPerRequest: feeAtoms + testBudget,
+	}, notify)
+	if err := reg.Register(fx.ctx, dirUID); err != nil {
+		t.Fatal(err)
+	}
+	st, err := notify.last(t)
+	if err != nil || st.State != directory.StateListed {
+		t.Fatalf("fresh listing not skipped: %+v err=%v", st, err)
+	}
+	var pend directory.PendingListOut
+	if err := fx.call(admin, "pending_registrations", nil, &pend); err != nil {
+		t.Fatal(err)
+	}
+	if len(pend.Registrations) != 0 {
+		t.Fatalf("skip still registered: %+v", pend)
+	}
+	if got := fx.execs.Load(); got != 1 {
+		t.Fatalf("skip re-verified: %d executions", got)
+	}
+}
+
+func TestRegistrantRenewsNearExpiry(t *testing.T) {
+	fx := newFixture(t)
+	prov := fx.dialFrom(fx.provRouter, "prov")
+	admin := fx.dial(adminUID)
+	fx.listProvider(prov, admin)
+
+	// Six days before expiry the same Register call renews for real.
+	fx.clk.Advance(24 * 24 * time.Hour)
+	notify := newNotifyLog()
+	reg := fx.newRegistrant(t, directory.AutoFund{
+		Enabled:            true,
+		MaxAtomsPerRequest: feeAtoms + testBudget,
+		MaxAtomsPerMonth:   10 * (feeAtoms + testBudget),
+	}, notify)
+	if err := reg.Register(fx.ctx, dirUID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var po directory.ProviderOut
+		if err := fx.call(prov, "get_provider", map[string]any{"uid": providerUID}, &po); err != nil {
+			t.Fatal(err)
+		}
+		if po.RenewedAt != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("near-expiry register never renewed: %+v", po)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := fx.execs.Load(); got != 2 {
+		t.Fatalf("renewal executions %d, want 2", got)
+	}
+}
+
 func TestRegistrantFundingCaps(t *testing.T) {
 	fx := newFixture(t)
 	notify := newNotifyLog()
