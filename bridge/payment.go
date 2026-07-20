@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,10 +42,12 @@ func (p *pendingPayment) decide(approve bool) {
 	p.once.Do(func() { p.decision <- approve })
 }
 
-// SpendEntry is one payment, persisted in mcpspend.json. Entries are
-// recorded when a payment launches and removed again only when the rail
-// reports definitive failure; a payment whose outcome is unknown (the wait
-// deadline passed with the attempt still running) stays counted against
+// SpendEntry is one payment, persisted in mcpspend.json. An entry is
+// recorded as pending when the payment launches and marked paid or failed
+// once the rail reports a terminal outcome; a payment whose outcome is
+// unknown (the wait deadline passed with the attempt still running) stays
+// pending until the host feeds the late terminal event to ResolveSpend.
+// Failed entries remain in the log as history but no longer count against
 // the daily cap.
 type SpendEntry struct {
 	TS    int64  `json:"ts"`
@@ -52,9 +55,21 @@ type SpendEntry struct {
 	Tool  string `json:"tool"`
 	Rail  string `json:"rail"`
 	Atoms int64  `json:"atoms"`
+	// Status is spendPending, spendPaid, spendFailed, or empty for
+	// entries recorded before outcomes were tracked (counted like paid).
+	Status string `json:"status,omitempty"`
+	// Err is the rail's failure reason on failed entries.
+	Err string `json:"err,omitempty"`
 
 	seq int64
 }
+
+// Spend entry statuses; the strings are the persisted/served contract.
+const (
+	spendPending = "pending"
+	spendPaid    = "paid"
+	spendFailed  = "failed"
+)
 
 // spendKeep bounds the persisted spend log; entries still inside the
 // rolling daily-cap window are never pruned regardless.
@@ -94,7 +109,9 @@ func (b *Bridge) settle(ctx context.Context, bot, tool string, pr *brmcp.Payment
 
 	// The spend is counted from launch: money may leave even when the
 	// confirmation wait expires (the attempt keeps running on the rail),
-	// so only a definitive failure uncounts it.
+	// so the entry stays pending until a terminal outcome is known - a
+	// definitive failure marks it failed, a late event lands via
+	// ResolveSpend.
 	b.mu.Lock()
 	seq := b.recordSpendLocked(bot, tool, "tip", atoms)
 	b.mu.Unlock()
@@ -103,11 +120,14 @@ func (b *Bridge) settle(ctx context.Context, bot, tool string, pr *brmcp.Payment
 	if err := b.cfg.Payer.Pay(payCtx, bot, atoms); err != nil {
 		if payCtx.Err() == nil {
 			b.mu.Lock()
-			b.removeSpendLocked(seq)
+			b.markSpendLocked(seq, spendFailed, err.Error())
 			b.mu.Unlock()
 		}
 		return err
 	}
+	b.mu.Lock()
+	b.markSpendLocked(seq, spendPaid, "")
+	b.mu.Unlock()
 	b.logf("brmcp bridge: paid %d atoms for %s/%s", atoms, bot[:8], tool)
 	return nil
 }
@@ -187,7 +207,8 @@ func (b *Bridge) ResolvePayment(id string, approve bool) bool {
 }
 
 // SpendLog returns a copy of the recorded payments and the rolling
-// twenty-four-hour total the daily cap is enforced against.
+// twenty-four-hour total the daily cap is enforced against; failed
+// payments moved no money and are excluded from the total.
 func (b *Bridge) SpendLog() (entries []SpendEntry, todayAtoms int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -200,7 +221,8 @@ func (b *Bridge) recordSpendLocked(bot, tool, rail string, atoms int64) int64 {
 	seq := b.spendSeq
 	b.spend = append(b.spend, SpendEntry{
 		TS: b.clk.Now().Unix(), Bot: bot, Tool: tool, Rail: rail, Atoms: atoms,
-		seq: seq,
+		Status: spendPending,
+		seq:    seq,
 	})
 	if err := b.persistSpendLocked(); err != nil {
 		b.logf("brmcp bridge: persist spend log: %v", err)
@@ -208,13 +230,13 @@ func (b *Bridge) recordSpendLocked(bot, tool, rail string, atoms int64) int64 {
 	return seq
 }
 
-// removeSpendLocked uncounts a launched payment whose rail reported
-// definitive failure. Entries loaded from disk carry no seq and are never
-// removed.
-func (b *Bridge) removeSpendLocked(seq int64) {
-	for i, s := range b.spend {
-		if s.seq == seq && seq != 0 {
-			b.spend = append(b.spend[:i], b.spend[i+1:]...)
+// markSpendLocked records the terminal outcome of a payment launched in
+// this process.
+func (b *Bridge) markSpendLocked(seq int64, status, errStr string) {
+	for i := range b.spend {
+		if b.spend[i].seq == seq && seq != 0 {
+			b.spend[i].Status = status
+			b.spend[i].Err = errStr
 			if err := b.persistSpendLocked(); err != nil {
 				b.logf("brmcp bridge: persist spend log: %v", err)
 			}
@@ -223,12 +245,44 @@ func (b *Bridge) removeSpendLocked(seq int64) {
 	}
 }
 
+// ResolveSpend records a terminal payment outcome that arrived after the
+// settle wait budget had passed (or after a restart, for pending entries
+// reloaded from disk): the host feeds it terminal rail events that matched
+// no live payment wait. Matching is oldest-pending-first per (payee uid,
+// atoms), case-insensitive on the uid like TipMatcher; events from
+// unrelated payments match no pending entry and report false.
+func (b *Bridge) ResolveSpend(payeeUID string, atoms int64, payErr error) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := range b.spend {
+		e := &b.spend[i]
+		if e.Status != spendPending || e.Atoms != atoms || !strings.EqualFold(e.Bot, payeeUID) {
+			continue
+		}
+		if payErr != nil {
+			e.Status = spendFailed
+			e.Err = payErr.Error()
+		} else {
+			e.Status = spendPaid
+			e.Err = ""
+		}
+		if err := b.persistSpendLocked(); err != nil {
+			b.logf("brmcp bridge: persist spend log: %v", err)
+		}
+		b.logf("brmcp bridge: late payment outcome for %s/%s: %d atoms %s",
+			e.Bot[:8], e.Tool, atoms, e.Status)
+		return true
+	}
+	return false
+}
+
 // spentSinceLocked sums spends after the cutoff (the rolling per-day cap).
+// Failed payments moved no money and do not count.
 func (b *Bridge) spentSinceLocked(cutoff time.Time) int64 {
 	var total int64
 	cut := cutoff.Unix()
 	for _, s := range b.spend {
-		if s.TS >= cut {
+		if s.TS >= cut && s.Status != spendFailed {
 			total += s.Atoms
 		}
 	}
@@ -237,13 +291,14 @@ func (b *Bridge) spentSinceLocked(cutoff time.Time) int64 {
 
 func (b *Bridge) persistSpendLocked() error {
 	// Bound the log, but never drop entries still inside the daily-cap
-	// window: pruning those would undercount the rolling total and let
-	// spending exceed the cap.
+	// window (pruning those would undercount the rolling total and let
+	// spending exceed the cap) or still pending (their late outcome could
+	// no longer be recorded).
 	if len(b.spend) > spendKeep {
 		first := len(b.spend) - spendKeep
 		cut := b.clk.Now().Add(-24 * time.Hour).Unix()
 		for i := 0; i < first; i++ {
-			if b.spend[i].TS >= cut {
+			if b.spend[i].TS >= cut || b.spend[i].Status == spendPending {
 				first = i
 				break
 			}

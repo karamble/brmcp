@@ -312,10 +312,13 @@ func TestAutopayHappyPath(t *testing.T) {
 		entries[0].Bot != botUID || entries[0].Tool != "paid" {
 		t.Fatalf("spend log: %+v", entries)
 	}
+	if entries[0].Status != "paid" || entries[0].Err != "" {
+		t.Fatalf("settled payment not marked paid: %+v", entries[0])
+	}
 	if today != paidPrice {
 		t.Fatalf("todayAtoms: %d != %d", today, paidPrice)
 	}
-	// The spend log survives a reload.
+	// The spend log survives a reload, status included.
 	b2, err := bridge.New(bridge.Config{
 		DataDir: fx.dataDir, Sender: fx.sender, Payer: fx.payer, Clock: fx.clk,
 	})
@@ -324,7 +327,7 @@ func TestAutopayHappyPath(t *testing.T) {
 	}
 	defer b2.Close()
 	entries2, _ := b2.SpendLog()
-	if len(entries2) != 1 {
+	if len(entries2) != 1 || entries2[0].Status != "paid" {
 		t.Fatalf("reloaded spend log: %+v", entries2)
 	}
 }
@@ -729,8 +732,11 @@ func TestPayFailureNotCounted(t *testing.T) {
 	}
 	requireNote(t, res, "brclientd: payment not made: no route to bot")
 	entries, today := fx.bridge.SpendLog()
-	if len(entries) != 0 || today != 0 {
-		t.Fatalf("failed payment stayed counted: %+v today=%d", entries, today)
+	if len(entries) != 1 || today != 0 {
+		t.Fatalf("failed payment miscounted: %+v today=%d", entries, today)
+	}
+	if entries[0].Status != "failed" || entries[0].Err != "no route to bot" {
+		t.Fatalf("failure not recorded on the entry: %+v", entries[0])
 	}
 }
 
@@ -765,6 +771,233 @@ func TestPayTimeoutStaysCounted(t *testing.T) {
 	entries, today := fx.bridge.SpendLog()
 	if len(entries) != 1 || today != paidPrice {
 		t.Fatalf("unconfirmed payment not counted: %+v today=%d", entries, today)
+	}
+	if entries[0].Status != "pending" {
+		t.Fatalf("unconfirmed payment not pending: %+v", entries[0])
+	}
+}
+
+// lateOutcomeFixture runs one paid call whose rail never confirms within
+// the wait budget, leaving the spend entry pending for ResolveSpend.
+func lateOutcomeFixture(t *testing.T) *fixture {
+	t.Helper()
+	fx := newFixture(t, fixtureOpts{settings: &bridge.Settings{
+		Enabled:         true,
+		Token:           "test-token-0123456789abcdef",
+		Mode:            "autopay",
+		PerCallCapAtoms: 10_000,
+		PerDayCapAtoms:  paidPrice, // exactly one launch fits the day
+		AllowedBots:     []string{botUID},
+		TipWaitSecs:     1,
+	}})
+	fx.payer.mu.Lock()
+	fx.payer.fn = func(ctx context.Context, _ string, _ int64) error {
+		<-ctx.Done()
+		return errors.New("tip not confirmed within 1s; the attempt keeps running")
+	}
+	fx.payer.mu.Unlock()
+
+	session := fx.session()
+	res, err := fx.call(session, "paid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("unconfirmed call succeeded")
+	}
+	return fx
+}
+
+func TestResolveSpendLateFailure(t *testing.T) {
+	fx := lateOutcomeFixture(t)
+
+	// While pending the payment consumes the daily budget: a second call
+	// must be refused.
+	session := fx.session()
+	res, err := fx.call(session, "paid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireNote(t, res, "daily cap")
+
+	// Unrelated terminal events (other payee, other amount, non-pending
+	// entries) must not resolve anything.
+	if fx.bridge.ResolveSpend(agentUID, paidPrice, errors.New("no route")) {
+		t.Fatal("resolved a spend for the wrong payee")
+	}
+	if fx.bridge.ResolveSpend(botUID, paidPrice+1, errors.New("no route")) {
+		t.Fatal("resolved a spend for the wrong amount")
+	}
+
+	// The late terminal failure marks the entry failed and releases the
+	// budget.
+	if !fx.bridge.ResolveSpend(botUID, paidPrice, errors.New("no route")) {
+		t.Fatal("late failure did not resolve the pending spend")
+	}
+	entries, today := fx.bridge.SpendLog()
+	if len(entries) != 1 || today != 0 {
+		t.Fatalf("late failure still counted: %+v today=%d", entries, today)
+	}
+	if entries[0].Status != "failed" || entries[0].Err != "no route" {
+		t.Fatalf("late failure not recorded: %+v", entries[0])
+	}
+	if fx.bridge.ResolveSpend(botUID, paidPrice, errors.New("no route")) {
+		t.Fatal("resolved the same spend twice")
+	}
+
+	// With the failed payment uncounted, the day budget fits a new call.
+	fx.payer.mu.Lock()
+	fx.payer.fn = nil
+	fx.payer.mu.Unlock()
+	if res, err := fx.call(session, "paid"); err != nil || res.IsError {
+		t.Fatalf("call after released budget: %v %v", err, res)
+	}
+
+	// The outcome survives a restart: a fresh bridge on the same data dir
+	// reloads the marked entry and the released budget.
+	b2, err := bridge.New(bridge.Config{
+		DataDir: fx.dataDir, Sender: fx.sender, Payer: fx.payer, Clock: fx.clk,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, today = b2.SpendLog()
+	if len(entries) != 2 || today != paidPrice {
+		t.Fatalf("reloaded log wrong: %+v today=%d", entries, today)
+	}
+	if entries[0].Status != "failed" || entries[1].Status != "paid" {
+		t.Fatalf("reloaded statuses wrong: %+v", entries)
+	}
+}
+
+func TestResolveSpendLatePaid(t *testing.T) {
+	fx := lateOutcomeFixture(t)
+
+	// The late terminal success confirms the pending entry; the spend
+	// stays counted.
+	if !fx.bridge.ResolveSpend(botUID, paidPrice, nil) {
+		t.Fatal("late success did not resolve the pending spend")
+	}
+	entries, today := fx.bridge.SpendLog()
+	if len(entries) != 1 || today != paidPrice {
+		t.Fatalf("late success miscounted: %+v today=%d", entries, today)
+	}
+	if entries[0].Status != "paid" || entries[0].Err != "" {
+		t.Fatalf("late success not recorded: %+v", entries[0])
+	}
+
+	// A pending entry reloaded from disk (no live seq) resolves by key the
+	// same way after a restart.
+	fx2 := lateOutcomeFixture(t)
+	b2, err := bridge.New(bridge.Config{
+		DataDir: fx2.dataDir, Sender: fx2.sender, Payer: fx2.payer, Clock: fx2.clk,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !b2.ResolveSpend(botUID, paidPrice, nil) {
+		t.Fatal("reloaded pending spend did not resolve")
+	}
+	entries, _ = b2.SpendLog()
+	if len(entries) != 1 || entries[0].Status != "paid" {
+		t.Fatalf("reloaded resolve wrong: %+v", entries)
+	}
+}
+
+func TestResolveSpendOldestFirst(t *testing.T) {
+	fx := newFixture(t, fixtureOpts{settings: &bridge.Settings{
+		Enabled:         true,
+		Token:           "test-token-0123456789abcdef",
+		Mode:            "autopay",
+		PerCallCapAtoms: 10_000,
+		PerDayCapAtoms:  2 * paidPrice,
+		AllowedBots:     []string{botUID},
+		TipWaitSecs:     1,
+	}})
+	fx.payer.mu.Lock()
+	fx.payer.fn = func(ctx context.Context, _ string, _ int64) error {
+		<-ctx.Done()
+		return errors.New("tip not confirmed within 1s")
+	}
+	fx.payer.mu.Unlock()
+
+	session := fx.session()
+	for i := 0; i < 2; i++ {
+		if _, err := fx.call(session, "paid"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if entries, _ := fx.bridge.SpendLog(); len(entries) != 2 {
+		t.Fatalf("pending entries: %+v", entries)
+	}
+
+	// Identical-key outcomes claim the oldest pending entry first.
+	if !fx.bridge.ResolveSpend(botUID, paidPrice, nil) {
+		t.Fatal("first outcome unresolved")
+	}
+	entries, _ := fx.bridge.SpendLog()
+	if entries[0].Status != "paid" || entries[1].Status != "pending" {
+		t.Fatalf("oldest entry not claimed first: %+v", entries)
+	}
+	if !fx.bridge.ResolveSpend(botUID, paidPrice, errors.New("no route")) {
+		t.Fatal("second outcome unresolved")
+	}
+	entries, today := fx.bridge.SpendLog()
+	if entries[1].Status != "failed" {
+		t.Fatalf("second entry not claimed: %+v", entries)
+	}
+	if today != paidPrice {
+		t.Fatalf("todayAtoms: %d != %d", today, paidPrice)
+	}
+}
+
+func TestPruneProtectsPending(t *testing.T) {
+	clk := newTestClock(true)
+	const seeded = 1500
+	const pendingAt = 300
+	fx := newFixture(t, fixtureOpts{
+		clk: clk,
+		seed: func(dataDir string) {
+			// Everything is outside the daily-cap window, so only the
+			// pending entry may stop the prune.
+			entries := make([]bridge.SpendEntry, seeded)
+			old := clk.Now().Add(-48 * time.Hour).Unix()
+			for i := range entries {
+				entries[i] = bridge.SpendEntry{TS: old, Bot: botUID, Tool: "seed", Rail: "tip", Atoms: 1}
+			}
+			entries[pendingAt].Status = "pending"
+			entries[pendingAt].Atoms = 2
+			raw, err := json.Marshal(entries)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dataDir, "mcpspend.json"), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	})
+	session := fx.session()
+
+	// The persist after a paid call prunes the stale legacy prefix but
+	// stops at the pending entry awaiting its late outcome.
+	if res, err := fx.call(session, "paid"); err != nil || res.IsError {
+		t.Fatalf("paid call: %v %v", err, res)
+	}
+	entries, _ := fx.bridge.SpendLog()
+	if len(entries) != seeded-pendingAt+1 {
+		t.Fatalf("prune kept %d entries != %d", len(entries), seeded-pendingAt+1)
+	}
+	if entries[0].Status != "pending" {
+		t.Fatalf("pending entry pruned: %+v", entries[0])
+	}
+
+	// Legacy entries (no status) are never claimed by late outcomes; the
+	// surviving pending one still is.
+	if fx.bridge.ResolveSpend(botUID, 1, errors.New("late")) {
+		t.Fatal("legacy entry claimed by a late outcome")
+	}
+	if !fx.bridge.ResolveSpend(botUID, 2, errors.New("late")) {
+		t.Fatal("pending entry not claimed by its late outcome")
 	}
 }
 
