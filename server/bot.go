@@ -17,6 +17,7 @@ import (
 	kitconfig "github.com/vctt94/bisonbotkit/config"
 
 	"github.com/karamble/brmcp"
+	"github.com/karamble/brmcp/wire"
 )
 
 // matomsPerAtom converts Bison Relay's milliatom tip amounts to atoms.
@@ -61,6 +62,26 @@ type RunBotHooks struct {
 	OnBot func(bot *kit.Bot)
 	// OnTipProgress sees every tip progress event before it is acked.
 	OnTipProgress func(ev *types.TipProgressEvent)
+	// OnPM sees every inbound PM that is NOT an MCP wire envelope - the
+	// plain chat the router deliberately ignores so the DM thread stays
+	// usable for humans. Hosts build chat commands on it.
+	OnPM func(uid, text string)
+	// OnTipReceived fires after an inbound tip has been processed
+	// (credited to the ledger when the peer is allowed, journaled, acked)
+	// so hosts can react to payments without polling the ledger.
+	OnTipReceived func(uid string, atoms int64)
+}
+
+// dispatchPM routes one inbound PM: MCP wire envelopes go to the router,
+// everything else is plain human chat and goes to the host's OnPM hook.
+func dispatchPM(router *brmcp.Router, hooks RunBotHooks, uid, text string) {
+	if _, isEnvelope := wire.Parse(text); !isEnvelope {
+		if hooks.OnPM != nil {
+			hooks.OnPM(uid, text)
+		}
+		return
+	}
+	router.HandlePM(uid, text)
 }
 
 // RunBot serves the harness over a bisonbotkit bot until ctx ends. It owns
@@ -106,7 +127,7 @@ func RunBotHooked(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig, hoo
 				if pm == nil || pm.Msg == nil {
 					continue
 				}
-				router.HandlePM(hex.EncodeToString(pm.Uid), pm.Msg.Message)
+				dispatchPM(router, hooks, hex.EncodeToString(pm.Uid), pm.Msg.Message)
 			}
 		}
 	}()
@@ -142,6 +163,9 @@ func RunBotHooked(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig, hoo
 					if err := bot.AckTipReceived(ctx, tip.SequenceId); err != nil {
 						h.logf("brmcp: ack tip %d: %v", tip.SequenceId, err)
 					}
+				}
+				if hooks.OnTipReceived != nil && !already {
+					hooks.OnTipReceived(uid, atoms)
 				}
 			}
 		}
