@@ -28,6 +28,32 @@ The two ends and the path between them:
        |  registered tool handlers
     the operator's service
 
+The agent is a stock MCP client: it speaks plain streamable HTTP to
+localhost and never learns that Bison Relay, tips, or Lightning exist.
+The bridge settles paid calls on its behalf under the user's spending
+policy, so payments are as invisible to the agent as the transport is.
+
+```mermaid
+flowchart LR
+    agent["AI agent<br/>(any stock MCP client —<br/>no BR, no wallet, no keys)"]
+    bridge["client bridge<br/>(embedded in the user's BR daemon —<br/>to the agent, an ordinary local MCP server)"]
+
+    agent -- "plain MCP: streamable HTTP<br/>+ bearer token, localhost" --> bridge
+
+    subgraph hidden["invisible to the agent"]
+        relay["Bison Relay<br/>(E2E-encrypted PMs,<br/>store &amp; forward)"]
+        brd["operator's brclientd"]
+        harness["serving harness<br/>(server/)"]
+        svc["service tools<br/>(free + paid)"]
+        relay --> brd
+        brd -- "clientrpc" --> harness
+        harness -- "registered handlers" --> svc
+    end
+
+    bridge -- "envelope parts over PMs" --> relay
+    bridge -. "paid calls settle as BR tips (LN),<br/>under the user's spending policy:<br/>caps, autopay, approval" .-> brd
+```
+
 ## Repository layout
 
 - `wire/` - the envelope codec: framing, chunking, reassembly, deadlines.
