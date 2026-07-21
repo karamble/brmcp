@@ -158,6 +158,33 @@ The server keeps an authoritative per-caller balance ledger:
 - A handler error refunds the call price; the ledger keeps no other refund
   path.
 
+The bridge automates that loop, so one agent-visible call settles and
+retries behind the scenes:
+
+```mermaid
+sequenceDiagram
+    participant A as AI agent
+    participant B as client bridge
+    participant H as serving harness
+    participant T as tool handler
+
+    A->>B: tools/call (HTTP, localhost)
+    B->>H: tools/call + brmcp/callKey (PMs over BR)
+    H-->>B: isError: payment_required<br/>(priceAtoms, shortfall, acceptedRails)
+    Note over B: spending policy: caps checked,<br/>then autopay or a parked<br/>human approval
+    B->>H: tip for the shortfall<br/>(the two BR clients' native<br/>invoice exchange, paid over LN)
+    Note over H: tip credits the caller's<br/>balance in the ledger
+    B->>H: retry tools/call, same callKey
+    H->>T: debit the price, run the handler
+    T-->>H: result (a handler error<br/>refunds the price)
+    H-->>B: result
+    B-->>A: result
+    Note over A: the agent saw one call<br/>and no payment at all
+```
+
+The `brmcp/callKey` makes the retry safe: the harness executes and charges
+a logical call once, replaying the recorded outcome to duplicates.
+
 ## Latency expectations
 
 Bison Relay is store-and-forward through a relay: a round trip takes seconds,
