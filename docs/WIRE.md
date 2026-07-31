@@ -41,11 +41,22 @@ count and bytes) and evict partial messages after a timeout.
 
 ## Sessions
 
-The session lifecycle is standard MCP: the client sends `initialize` as the
-first message of a new sid. A server accepting a part with an unknown sid
-from an authorized peer treats it as a new session. Either side ends a
-session by simply ceasing to reference its sid; servers SHOULD expire idle
-sessions.
+The session lifecycle is standard MCP. The first message of a new sid is
+either `server/discover` (a client negotiating MCP revision 2026-07-28 or
+later) or `initialize` (the legacy handshake). Implementations that do not
+speak the new revision MUST answer `server/discover` with JSON-RPC error
+-32601 (method not found) so callers fall back to `initialize`; a sid
+carries at most one `initialize` (a duplicate is rejected). The server's
+answered `protocolVersion` is authoritative and may be lower than the one
+requested. On sessions at revision 2026-07-28 or later every request
+carries the `io.modelcontextprotocol/protocolVersion` (and
+`clientCapabilities`) `_meta` keys in place of session-level initialize
+state; these coexist in the same `_meta` object as the `brmcp/*` keys, and
+`brmcp/callKey` semantics are identical on both wires.
+
+A server accepting a part with an unknown sid from an authorized peer
+treats it as a new session. Either side ends a session by simply ceasing to
+reference its sid; servers SHOULD expire idle sessions.
 
 ## Identity and authorization
 

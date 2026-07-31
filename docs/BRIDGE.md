@@ -59,8 +59,18 @@ is the reference host.
 
 ## The endpoint
 
-`/mcp/<bot-uid>` speaks the standard MCP streamable-HTTP transport. Auth is
-one bearer token, compared in constant time; an empty token never
+`/mcp/<bot-uid>` speaks the standard MCP streamable-HTTP transport in
+stateless mode and serves both current protocol generations per request:
+agents on the 2026-07-28 wire and agents on the legacy handshake connect
+unchanged. Stateless means the endpoint issues and honors no
+`Mcp-Session-Id`, answers GET (the standalone SSE stream) and DELETE with
+405, and caps request bodies at 16 MiB (413 beyond) - the bridge sends no
+server-initiated messages, so nothing is lost. Raw non-SDK callers using
+the 2026-07-28 wire must mirror the standardized HTTP headers
+(`Mcp-Protocol-Version`, `Mcp-Method`) alongside the request `_meta`; SDK
+clients do this on their own.
+
+Auth is one bearer token, compared in constant time; an empty token never
 authorizes. The uid must be 64-hex and on the bot allowlist; anything else
 is 404. With `ListenAddr` set the bridge owns the listener and binds only
 while the settings enable it (a token change restarts it, severing streams

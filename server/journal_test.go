@@ -5,8 +5,10 @@
 package server
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,5 +87,59 @@ func TestJournalOutcomeCap(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "calls.json")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestJournalDecodesV161Entries pins cross-version journal compatibility:
+// a calls.json written by brmcp on go-sdk v1.6.1 must reconcile and replay
+// after the operator upgrades in place. The fixture bytes are the exact
+// v1.6.1 shape (no resultType, no inputRequests).
+func TestJournalDecodesV161Entries(t *testing.T) {
+	peer := strings.Repeat("1", 64)
+	fixture := strings.ReplaceAll(`{
+  "PEER|fixture-key-0001": {"peer":"PEER","atoms":500,"done":true,"expires":4102444800,"kept":true,"result":{"content":[{"type":"text","text":"{\"n\":1}"}]},"out":{"n":1}},
+  "PEER|fixture-key-0002": {"peer":"PEER","atoms":700}
+}`, "PEER", peer)
+	path := filepath.Join(t.TempDir(), "calls.json")
+	if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j, err := openCallJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The charged-but-uncompleted entry still reads as refundable.
+	inter := j.interrupted()
+	if len(inter) != 1 {
+		t.Fatalf("interrupted entries: %d != 1", len(inter))
+	}
+	e, ok := inter[peer+"|fixture-key-0002"]
+	if !ok || e.Peer != peer || e.Atoms != 700 {
+		t.Fatalf("interrupted entry: %+v", inter)
+	}
+
+	// The completed outcome replays, text content decoded intact.
+	recs := j.completedRecords(time.Now())
+	if len(recs) != 1 {
+		t.Fatalf("completed records: %d != 1", len(recs))
+	}
+	rec := recs[peer+"|fixture-key-0001"]
+	if rec == nil || rec.err != nil || rec.result == nil {
+		t.Fatalf("completed record: %+v", rec)
+	}
+	tc, ok := rec.result.Content[0].(*mcp.TextContent)
+	if !ok || tc.Text != `{"n":1}` {
+		t.Fatalf("replayed content: %+v", rec.result.Content)
+	}
+
+	// Replayed results must stay free of new-wire fields: a legacy caller
+	// gets byte-compatible outcomes across the operator's upgrade.
+	raw, err := json.Marshal(rec.result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "resultType") {
+		t.Fatalf("replayed result grew new-wire fields: %s", raw)
 	}
 }

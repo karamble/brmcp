@@ -18,12 +18,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/karamble/brmcp"
 	"github.com/karamble/brmcp/bridge"
 	"github.com/karamble/brmcp/brmcptest"
 	"github.com/karamble/brmcp/server"
+	"github.com/karamble/brmcp/wire"
 )
 
 var (
@@ -293,6 +295,11 @@ func requireNote(t *testing.T, res *mcp.CallToolResult, substr string) {
 func TestAutopayHappyPath(t *testing.T) {
 	fx := newFixture(t, fixtureOpts{})
 	session := fx.session()
+
+	// The stateless endpoint must offer the new wire to a current agent.
+	if v := session.InitializeResult().ProtocolVersion; v < "2026-07-28" {
+		t.Fatalf("bridge endpoint negotiated %q; want the 2026-07-28 wire", v)
+	}
 
 	res, err := fx.call(session, "paid")
 	if err != nil {
@@ -1015,5 +1022,215 @@ func TestUnreachableBotIs503(t *testing.T) {
 	session := fx.session()
 	if res, err := fx.call(session, "free"); err != nil || res.IsError {
 		t.Fatalf("recovery call: %v %v", err, res)
+	}
+}
+
+// legacyBot is a hand-rolled pre-2026-07-28 MCP server on the fabric: it
+// rejects server/discover with method-not-found the way a v1.6.1 bot does,
+// then serves the legacy handshake and one paid tool. It pins the bridge's
+// fallback dial path against bots that have not upgraded yet.
+type legacyBot struct {
+	t   *testing.T
+	snd brmcp.PMSender
+
+	mu       sync.Mutex
+	funded   bool
+	methods  []string
+	callKeys []string
+	newMeta  bool
+}
+
+func (lb *legacyBot) setFunded(v bool) {
+	lb.mu.Lock()
+	lb.funded = v
+	lb.mu.Unlock()
+}
+
+func (lb *legacyBot) handlePM(from, text string) {
+	part, ok := wire.Parse(text)
+	if !ok || part.Total != 1 {
+		return
+	}
+	msg, err := jsonrpc.DecodeMessage(part.Chunk)
+	if err != nil {
+		lb.t.Errorf("legacy bot: bad frame: %v", err)
+		return
+	}
+	req, ok := msg.(*jsonrpc.Request)
+	if !ok {
+		return
+	}
+	var params struct {
+		Meta map[string]any `json:"_meta"`
+		Name string         `json:"name"`
+	}
+	if len(req.Params) > 0 {
+		_ = json.Unmarshal(req.Params, &params)
+	}
+
+	lb.mu.Lock()
+	lb.methods = append(lb.methods, req.Method)
+	if req.Method != "server/discover" {
+		if _, ok := params.Meta[mcp.MetaKeyProtocolVersion]; ok {
+			lb.newMeta = true
+		}
+	}
+	if req.Method == "tools/call" {
+		if k, _ := params.Meta[brmcp.CallKeyMetaKey].(string); k != "" {
+			lb.callKeys = append(lb.callKeys, k)
+		}
+	}
+	funded := lb.funded
+	lb.mu.Unlock()
+
+	var result any
+	var respErr error
+	switch req.Method {
+	case "server/discover":
+		// What a pre-1.7 bot answers; any error triggers the client's
+		// legacy fallback, so the exact text is not load-bearing.
+		respErr = &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound,
+			Message: `method not found: "server/discover"`}
+	case "initialize":
+		result = map[string]any{
+			"protocolVersion": "2025-11-25",
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]any{"name": "legacy-bot", "version": "0"},
+		}
+	case "tools/list":
+		result = map[string]any{"tools": []map[string]any{{
+			"name":        "paid",
+			"description": "paid tool",
+			"inputSchema": map[string]any{"type": "object"},
+			"_meta":       map[string]any{brmcp.PriceMetaKey: paidPrice},
+		}}}
+	case "tools/call":
+		if funded {
+			result = map[string]any{"content": []map[string]any{
+				{"type": "text", "text": `{"ok":true}`}}}
+		} else {
+			pr, _ := json.Marshal(brmcp.PaymentRequired{
+				Error: "payment_required", Tool: params.Name,
+				PriceAtoms: paidPrice, ShortfallAtoms: paidPrice,
+				AcceptedRails: []string{"tip"},
+			})
+			result = map[string]any{"isError": true, "content": []map[string]any{
+				{"type": "text", "text": string(pr)}}}
+		}
+	default:
+		if !req.ID.IsValid() {
+			return // notification (notifications/initialized)
+		}
+		respErr = &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound,
+			Message: "method not found"}
+	}
+
+	resp := &jsonrpc.Response{ID: req.ID, Error: respErr}
+	if respErr == nil {
+		raw, err := json.Marshal(result)
+		if err != nil {
+			lb.t.Errorf("legacy bot: marshal result: %v", err)
+			return
+		}
+		resp.Result = raw
+	}
+	data, err := jsonrpc.EncodeMessage(resp)
+	if err != nil {
+		lb.t.Errorf("legacy bot: encode: %v", err)
+		return
+	}
+	parts, err := wire.Encode(part.SID, data, time.Now().Add(time.Minute), 0)
+	if err != nil {
+		lb.t.Errorf("legacy bot: frame: %v", err)
+		return
+	}
+	for _, pm := range parts {
+		if err := lb.snd.SendPM(context.Background(), from, pm); err != nil {
+			lb.t.Errorf("legacy bot: send: %v", err)
+		}
+	}
+}
+
+// TestLegacyBotFallback proves the bridge still completes a paid call
+// against a bot that has not upgraded: the SDK client probes
+// server/discover, eats the error, falls back to the legacy initialize (the
+// one extra relay round trip the grace period costs), and the payment
+// reissue reuses the idempotency key.
+func TestLegacyBotFallback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	fab := brmcptest.NewFabric()
+	t.Cleanup(fab.Close)
+	bot := &legacyBot{t: t, snd: fab.Sender(botUID)}
+	fab.Attach(botUID, bot.handlePM)
+
+	b, err := bridge.New(bridge.Config{
+		DataDir: t.TempDir(),
+		Sender:  fab.Sender(agentUID),
+		Payer: bridge.PayerFunc(func(_ context.Context, payee string, atoms int64) error {
+			if payee != botUID || atoms != paidPrice {
+				t.Errorf("payment to %s of %d; want %s of %d", payee, atoms, botUID, paidPrice)
+			}
+			bot.setFunded(true)
+			return nil
+		}),
+		Name:  "brclientd",
+		Logf:  t.Logf,
+		Clock: newTestClock(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.Close() })
+	fab.Attach(agentUID, b.HandlePM)
+	if err := b.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ApplySettings(bridge.Settings{
+		Enabled:         true,
+		Token:           "test-token-0123456789abcdef",
+		Mode:            "autopay",
+		PerCallCapAtoms: 10_000,
+		PerDayCapAtoms:  100_000,
+		AllowedBots:     []string{botUID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := httptest.NewServer(b.Handler())
+	t.Cleanup(httpSrv.Close)
+
+	tr := &mcp.StreamableClientTransport{
+		Endpoint:   httpSrv.URL + "/mcp/" + botUID,
+		HTTPClient: &http.Client{Transport: bearerTransport{"test-token-0123456789abcdef"}},
+	}
+	cl := mcp.NewClient(&mcp.Implementation{Name: "agent", Version: "0"}, nil)
+	session, err := cl.Connect(ctx, tr, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { session.Close() })
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "paid", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("paid call failed: %s", brmcptest.Text(res))
+	}
+	if text := brmcptest.Text(res); !strings.Contains(text, `"ok":true`) {
+		t.Fatalf("unexpected result: %s", text)
+	}
+
+	bot.mu.Lock()
+	defer bot.mu.Unlock()
+	if len(bot.methods) < 2 || bot.methods[0] != "server/discover" || bot.methods[1] != "initialize" {
+		t.Fatalf("dial sequence %v; want server/discover then the legacy initialize fallback", bot.methods)
+	}
+	if bot.newMeta {
+		t.Fatal("post-fallback requests carried 2026-07-28 _meta; the session is not on the legacy wire")
+	}
+	if len(bot.callKeys) != 2 || bot.callKeys[0] != bot.callKeys[1] {
+		t.Fatalf("callKeys %v; want the payment reissue to reuse one idempotency key", bot.callKeys)
 	}
 }

@@ -33,7 +33,22 @@ func (b *Bridge) Handler() http.Handler {
 			return mcp.NewServer(&mcp.Implementation{Name: b.cfg.Name, Version: "0"}, nil)
 		}
 		return srv
-	}, nil)
+	}, &mcp.StreamableHTTPOptions{
+		// Stateless serves both protocol generations - pre-2026-07-28
+		// agents get their session state synthesized per request - and,
+		// unlike the stateful mode, cannot accumulate a server session
+		// per server/discover probe.
+		Stateless: true,
+		// On the 2026-07-28 wire the POST is the whole call lifecycle:
+		// when the agent disconnects, stop waiting on approval and
+		// settlement instead of serving a response nobody reads.
+		PropagateRequestCancellation: true,
+		// The BR wire carries up to wire.MaxParts chunks (~12.8 MiB) per
+		// message; the SDK's 4 MiB default would 413 argument payloads
+		// the transport itself accepts. The listener is loopback with
+		// bearer auth, not an open ingress.
+		MaxRequestBodyBytes: 16 << 20,
+	})
 	return b.authMiddleware(mcpHandler)
 }
 

@@ -26,25 +26,30 @@ type echoIn struct {
 	Text string `json:"text"`
 }
 
-func newEchoServer(t *testing.T) *mcp.Server {
+// newEchoServer builds a plain SDK server with two tools. The returned
+// getter reports the protocol version seen by the last echo call, so tests
+// can assert which wire the session actually negotiated.
+func newEchoServer(t *testing.T) (*mcp.Server, func() string) {
 	t.Helper()
+	var proto atomic.Value
 	s := mcp.NewServer(&mcp.Implementation{Name: "brmcp-test", Version: "0"}, nil)
 	mcp.AddTool(s, &mcp.Tool{Name: "echo", Description: "echo text back"},
-		func(_ context.Context, _ *mcp.CallToolRequest, in echoIn) (*mcp.CallToolResult, any, error) {
+		func(_ context.Context, req *mcp.CallToolRequest, in echoIn) (*mcp.CallToolResult, any, error) {
+			proto.Store(req.ProtocolVersion())
 			return nil, map[string]string{"echo": in.Text}, nil
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "big", Description: "return a large payload"},
 		func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
 			return nil, map[string]string{"blob": strings.Repeat("x", 8192)}, nil
 		})
-	return s
+	return s, func() string { v, _ := proto.Load().(string); return v }
 }
 
 func TestMCPSessionOverPM(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	server := newEchoServer(t)
+	server, lastProto := newEchoServer(t)
 	// ChunkSize 512 forces the big tool's result to cross as many parts.
 	f := brmcptest.NewFabric()
 	t.Cleanup(f.Close)
@@ -70,6 +75,19 @@ func TestMCPSessionOverPM(t *testing.T) {
 	}
 	defer session.Close()
 
+	// Both ends run the current SDK, so the fabric must negotiate the
+	// 2026-07-28 wire, and the whole handshake must be one discover round
+	// trip: no initialize, no initialized notification, and no
+	// subscriptions/listen (no list-changed handlers are installed).
+	if v := session.InitializeResult().ProtocolVersion; v < "2026-07-28" {
+		t.Fatalf("fabric session negotiated %q; want the 2026-07-28 wire", v)
+	}
+	if got := f.Sent(); got != 2 {
+		// If a future SDK grows the discover result past ChunkSize 512,
+		// raise the chunk size above rather than loosening this count.
+		t.Fatalf("connect crossed %d PMs; want 2 (one discover round trip)", got)
+	}
+
 	tl, err := session.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
@@ -90,6 +108,11 @@ func TestMCPSessionOverPM(t *testing.T) {
 	}
 	if text := brmcptest.Text(res); !strings.Contains(text, "hello over BR") {
 		t.Fatalf("echo result missing input: %s", text)
+	}
+	// The per-request _meta triple crossed the BR wire, not just the
+	// handshake: the handler saw the new protocol revision.
+	if v := lastProto(); v < "2026-07-28" {
+		t.Fatalf("echo handler saw protocol %q; want the 2026-07-28 wire", v)
 	}
 
 	pmsBefore := f.Sent()
@@ -154,7 +177,7 @@ func TestIdleSessionExpiry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	server := newEchoServer(t)
+	server, _ := newEchoServer(t)
 	var accepts atomic.Int64
 	f := brmcptest.NewFabric()
 	t.Cleanup(f.Close)
@@ -206,7 +229,7 @@ func TestSessionCapPerPeer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	server := newEchoServer(t)
+	server, _ := newEchoServer(t)
 	var accepts atomic.Int64
 	f := brmcptest.NewFabric()
 	t.Cleanup(f.Close)

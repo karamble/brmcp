@@ -6,6 +6,7 @@ package bridge_test
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -270,4 +271,155 @@ func httpTestServer(t *testing.T, b *bridge.Bridge) string {
 	go srv.Serve(ln)
 	t.Cleanup(func() { srv.Close() })
 	return "http://" + ln.Addr().String()
+}
+
+// postMCP sends one JSON-RPC frame to the bridge endpoint the way a raw
+// (non-SDK) agent would, returning the response and the decoded body: SSE
+// data lines concatenated, plain JSON as-is.
+func postMCP(t *testing.T, url, token, body string, hdr ...string) (*http.Response, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	for i := 0; i+1 < len(hdr); i += 2 {
+		req.Header.Set(hdr[i], hdr[i+1])
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		var sb strings.Builder
+		for _, line := range strings.Split(text, "\n") {
+			if data, ok := strings.CutPrefix(line, "data:"); ok {
+				sb.WriteString(strings.TrimSpace(data))
+			}
+		}
+		text = sb.String()
+	}
+	return resp, text
+}
+
+// rpcResult decodes one JSON-RPC response body and fails on an error reply.
+func rpcResult(t *testing.T, body string) json.RawMessage {
+	t.Helper()
+	var frame struct {
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &frame); err != nil {
+		t.Fatalf("undecodable JSON-RPC body: %v: %s", err, body)
+	}
+	if len(frame.Error) > 0 {
+		t.Fatalf("JSON-RPC error: %s", frame.Error)
+	}
+	return frame.Result
+}
+
+// TestLegacyWireHTTP drives the bridge endpoint the way a pre-2026-07-28
+// agent does - raw initialize, no session header discipline - and pins the
+// two visible changes of the stateless handler: no Mcp-Session-Id, and no
+// standalone GET stream.
+func TestLegacyWireHTTP(t *testing.T) {
+	fx := newFixture(t, fixtureOpts{})
+	url := fx.endpoint(botUID)
+
+	resp, body := postMCP(t, url, fx.token,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"legacy","version":"0"}}}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("initialize status %d: %s", resp.StatusCode, body)
+	}
+	var init struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(rpcResult(t, body), &init); err != nil {
+		t.Fatal(err)
+	}
+	if init.ProtocolVersion != "2025-11-25" {
+		t.Fatalf("initialize answered %q; want 2025-11-25", init.ProtocolVersion)
+	}
+	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+		t.Fatalf("stateless endpoint issued a session id %q", sid)
+	}
+
+	// A bare tools/call with no prior initialize on this connection and no
+	// session header: per-request synthesis is what keeps old agents
+	// working against the stateless endpoint.
+	resp, body = postMCP(t, url, fx.token,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"free","arguments":{}}}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("tools/call status %d: %s", resp.StatusCode, body)
+	}
+	if res := rpcResult(t, body); !strings.Contains(string(res), "yes") {
+		t.Fatalf("free tool result: %s", res)
+	}
+
+	// The standalone SSE stream and session DELETE are gone; both eras of
+	// agents treat 405 as "not offered".
+	get, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	get.Header.Set("Authorization", "Bearer "+fx.token)
+	get.Header.Set("Accept", "text/event-stream")
+	get.Header.Set("Mcp-Session-Id", "ignored")
+	gresp, err := http.DefaultClient.Do(get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gresp.Body.Close()
+	if gresp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET status %d != 405", gresp.StatusCode)
+	}
+	if allow := gresp.Header.Get("Allow"); allow != http.MethodPost {
+		t.Fatalf("GET Allow %q != POST", allow)
+	}
+	if got := httpStatus(t, http.MethodDelete, url, fx.token); got != http.StatusMethodNotAllowed {
+		t.Fatalf("DELETE status %d != 405", got)
+	}
+}
+
+// TestStatelessSurface pins the dual-wire advertisement: one discover
+// probe, no session residue, both protocol generations offered.
+func TestStatelessSurface(t *testing.T) {
+	fx := newFixture(t, fixtureOpts{})
+	url := fx.endpoint(botUID)
+
+	// SEP-2243 header standardization: a new-wire request must mirror its
+	// protocol version and method into the Mcp-Protocol-Version and
+	// Mcp-Method headers (SDK clients do this on their own; raw callers
+	// must too).
+	resp, body := postMCP(t, url, fx.token,
+		`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`,
+		"Mcp-Protocol-Version", "2026-07-28", "Mcp-Method", "server/discover")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("discover status %d: %s", resp.StatusCode, body)
+	}
+	var disc struct {
+		SupportedVersions []string `json:"supportedVersions"`
+	}
+	if err := json.Unmarshal(rpcResult(t, body), &disc); err != nil {
+		t.Fatal(err)
+	}
+	var new2026, legacy bool
+	for _, v := range disc.SupportedVersions {
+		new2026 = new2026 || v == "2026-07-28"
+		legacy = legacy || v == "2025-11-25"
+	}
+	if !new2026 || !legacy {
+		t.Fatalf("supportedVersions %v; want both 2026-07-28 and 2025-11-25", disc.SupportedVersions)
+	}
+	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+		t.Fatalf("discover response carries a session id %q", sid)
+	}
 }

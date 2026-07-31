@@ -8,14 +8,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/karamble/brmcp"
 	"github.com/karamble/brmcp/brmcptest"
 	"github.com/karamble/brmcp/server"
+	"github.com/karamble/brmcp/wire"
 )
 
 var (
@@ -219,5 +222,227 @@ func TestCallKeyIdempotency(t *testing.T) {
 	}
 	if got := h.Billing().Balance(clientUID); got != 200 {
 		t.Fatalf("balance after second charge: %d != 200", got)
+	}
+}
+
+// legacyCaller speaks the pre-2026-07-28 wire by hand - initialize first,
+// no server/discover, no per-request _meta triple - so the server's legacy
+// path stays covered now that the SDK client negotiates the new wire.
+type legacyCaller struct {
+	t     *testing.T
+	sid   string
+	peer  string
+	snd   brmcp.PMSender
+	inbox chan jsonrpc.Message
+}
+
+func newLegacyCaller(t *testing.T, f *brmcptest.Fabric, uid, peer string) *legacyCaller {
+	t.Helper()
+	lc := &legacyCaller{t: t, sid: wire.NewID(), peer: peer,
+		snd: f.Sender(uid), inbox: make(chan jsonrpc.Message, 16)}
+	f.Attach(uid, func(_, text string) {
+		part, ok := wire.Parse(text)
+		if !ok || part.SID != lc.sid || part.Total != 1 {
+			return // replies here are single-part; other sids are not ours
+		}
+		msg, err := jsonrpc.DecodeMessage(part.Chunk)
+		if err != nil {
+			t.Errorf("bad reply frame: %v", err)
+			return
+		}
+		lc.inbox <- msg
+	})
+	return lc
+}
+
+// send frames one JSON-RPC message onto the fabric. id 0 sends a
+// notification.
+func (lc *legacyCaller) send(ctx context.Context, id int64, method, params string) {
+	lc.t.Helper()
+	req := &jsonrpc.Request{Method: method, Params: json.RawMessage(params)}
+	if id != 0 {
+		rid, err := jsonrpc.MakeID(float64(id))
+		if err != nil {
+			lc.t.Fatal(err)
+		}
+		req.ID = rid
+	}
+	data, err := jsonrpc.EncodeMessage(req)
+	if err != nil {
+		lc.t.Fatal(err)
+	}
+	parts, err := wire.Encode(lc.sid, data, time.Now().Add(time.Minute), 0)
+	if err != nil {
+		lc.t.Fatal(err)
+	}
+	for _, pm := range parts {
+		if err := lc.snd.SendPM(ctx, lc.peer, pm); err != nil {
+			lc.t.Fatal(err)
+		}
+	}
+}
+
+func (lc *legacyCaller) await(ctx context.Context, id int64) *jsonrpc.Response {
+	lc.t.Helper()
+	for {
+		select {
+		case msg := <-lc.inbox:
+			resp, ok := msg.(*jsonrpc.Response)
+			// MakeID normalizes float64 to an int64-typed ID.
+			if !ok || resp.ID.Raw() != int64(id) {
+				continue
+			}
+			return resp
+		case <-ctx.Done():
+			lc.t.Fatalf("no response to request %d: %v", id, ctx.Err())
+			return nil
+		}
+	}
+}
+
+// callResult decodes a tools/call response body.
+func (lc *legacyCaller) callResult(resp *jsonrpc.Response) *mcp.CallToolResult {
+	lc.t.Helper()
+	if resp.Error != nil {
+		lc.t.Fatalf("tools/call failed: %v", resp.Error)
+	}
+	res := &mcp.CallToolResult{}
+	if err := json.Unmarshal(resp.Result, res); err != nil {
+		lc.t.Fatalf("undecodable tools/call result: %v: %s", err, resp.Result)
+	}
+	return res
+}
+
+// TestLegacyWirePaidFlow drives the full paid-tool flow over hand-rolled
+// pre-2026-07-28 frames: the grace-period contract is that agents on the
+// old wire keep working against an upgraded harness, priced _meta, keyed
+// idempotency and all.
+func TestLegacyWirePaidFlow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	h, err := server.NewHarness(&mcp.Implementation{Name: "t", Version: "0"}, server.HarnessConfig{
+		DataDir:        t.TempDir(),
+		AllowedPeers:   []string{clientUID},
+		CallsPerMinute: 100,
+		Logf:           t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var executions atomic.Int64
+	server.AddTool(h, &mcp.Tool{Name: "paid", Description: "paid tool"}, 500,
+		func(context.Context, string, struct{}) (any, error) {
+			return map[string]int64{"n": executions.Add(1)}, nil
+		})
+
+	f := brmcptest.NewFabric()
+	t.Cleanup(f.Close)
+	router := h.Start(ctx, f.Sender(serverUID))
+	f.Attach(serverUID, router.HandlePM)
+	lc := newLegacyCaller(t, f, clientUID, serverUID)
+
+	// The legacy handshake echoes a known version verbatim.
+	lc.send(ctx, 1, "initialize",
+		`{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"legacy-agent","version":"0"}}`)
+	resp := lc.await(ctx, 1)
+	if resp.Error != nil {
+		t.Fatalf("initialize failed: %v", resp.Error)
+	}
+	var init struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(resp.Result, &init); err != nil {
+		t.Fatal(err)
+	}
+	if init.ProtocolVersion != "2025-11-25" {
+		t.Fatalf("initialize answered %q; want the requested 2025-11-25", init.ProtocolVersion)
+	}
+	lc.send(ctx, 0, "notifications/initialized", `{}`)
+	// The notification has no reply to await, and the fabric delivers each
+	// PM on its own goroutine; give it a beat so tools/list cannot overtake
+	// it.
+	time.Sleep(50 * time.Millisecond)
+
+	// Prices are advertised in _meta on the legacy wire too.
+	lc.send(ctx, 2, "tools/list", `{}`)
+	resp = lc.await(ctx, 2)
+	if resp.Error != nil {
+		t.Fatalf("tools/list failed: %v", resp.Error)
+	}
+	var tl struct {
+		Tools []struct {
+			Name string         `json:"name"`
+			Meta map[string]any `json:"_meta"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(resp.Result, &tl); err != nil {
+		t.Fatal(err)
+	}
+	var sawPrice bool
+	for _, tool := range tl.Tools {
+		if tool.Name == "paid" {
+			if v, ok := tool.Meta[brmcp.PriceMetaKey].(float64); ok && int64(v) == 500 {
+				sawPrice = true
+			}
+		}
+	}
+	if !sawPrice {
+		t.Fatalf("paid tool does not advertise its price: %s", resp.Result)
+	}
+
+	// Unfunded keyed call refuses with the parseable payment_required body.
+	const callParams = `{"name":"paid","arguments":{},"_meta":{"brmcp/callKey":"legacy-key-0000000001"}}`
+	lc.send(ctx, 3, "tools/call", callParams)
+	res := lc.callResult(lc.await(ctx, 3))
+	pr := brmcp.ParsePaymentRequired(res)
+	if pr == nil || pr.PriceAtoms != 500 || pr.ShortfallAtoms != 500 {
+		t.Fatalf("expected payment_required with shortfall 500, got %+v: %s", pr, brmcptest.Text(res))
+	}
+
+	// Funded, the same key runs for real exactly once.
+	if err := h.Billing().Credit(clientUID, 600); err != nil {
+		t.Fatal(err)
+	}
+	lc.send(ctx, 4, "tools/call", callParams)
+	res = lc.callResult(lc.await(ctx, 4))
+	if res.IsError {
+		t.Fatalf("funded call failed: %s", brmcptest.Text(res))
+	}
+	if got := executions.Load(); got != 1 {
+		t.Fatalf("executions: %d != 1", got)
+	}
+	if got := h.Billing().Balance(clientUID); got != 100 {
+		t.Fatalf("balance after paid call: %d != 100", got)
+	}
+
+	// A duplicate key replays the outcome without executing or charging.
+	lc.send(ctx, 5, "tools/call", callParams)
+	res2 := lc.callResult(lc.await(ctx, 5))
+	if brmcptest.Text(res2) != brmcptest.Text(res) {
+		t.Fatalf("replayed outcome differs: %s != %s", brmcptest.Text(res2), brmcptest.Text(res))
+	}
+	if got := executions.Load(); got != 1 {
+		t.Fatalf("duplicate executed the handler: %d != 1", got)
+	}
+	if got := h.Billing().Balance(clientUID); got != 100 {
+		t.Fatalf("duplicate was charged: balance %d != 100", got)
+	}
+
+	// An unknown legacy version negotiates DOWN to 2025-11-25 (the pre-1.7
+	// SDK echoed its latest instead); pin the grace-period behavior
+	// non-Go callers will see. Fresh caller: a sid takes one initialize.
+	lc2 := newLegacyCaller(t, f, clientUID, serverUID)
+	lc2.send(ctx, 1, "initialize",
+		`{"protocolVersion":"2099-01-01","capabilities":{},"clientInfo":{"name":"x","version":"0"}}`)
+	resp = lc2.await(ctx, 1)
+	if resp.Error != nil {
+		t.Fatalf("unknown-version initialize failed: %v", resp.Error)
+	}
+	if err := json.Unmarshal(resp.Result, &init); err != nil {
+		t.Fatal(err)
+	}
+	if init.ProtocolVersion != "2025-11-25" {
+		t.Fatalf("unknown version negotiated %q; want 2025-11-25", init.ProtocolVersion)
 	}
 }

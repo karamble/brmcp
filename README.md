@@ -185,13 +185,27 @@ sequenceDiagram
 The `brmcp/callKey` makes the retry safe: the harness executes and charges
 a logical call once, replaying the recorded outcome to duplicates.
 
+## Protocol versions
+
+brmcp carries whatever MCP revision the two ends negotiate; the go-sdk it
+builds on speaks both current protocol generations for the spec's 12-month
+grace period. Servers answer the legacy `initialize` handshake and the
+2026-07-28 `server/discover` negotiation alike, the bridge endpoint serves
+both generations to local agents, and clients probe for the new wire and
+fall back to the legacy handshake against servers that have not upgraded.
+No configuration chooses a version; it is negotiated per session.
+
 ## Latency expectations
 
 Bison Relay is store-and-forward through a relay: a round trip takes seconds,
-not milliseconds. Session initialization plus a tool call is typically 3-4
-round trips; clients should cache the session and the tool list. Outgoing
-messages carry a deadline (10 minutes by default) so a request delivered to
-an offline server does not execute after the caller gave up.
+not milliseconds. On the 2026-07-28 wire a fresh session is one
+`server/discover` round trip, then one per `tools/list` and `tools/call` -
+typically 3 round trips for handshake-plus-call. Against a peer still on the
+legacy wire the failed discover probe adds one round trip before the
+`initialize` exchange, so budget 4-5 until that peer upgrades. Clients
+should cache the session and the tool list either way. Outgoing messages
+carry a deadline (10 minutes by default) so a request delivered to an
+offline server does not execute after the caller gave up.
 
 ## License
 

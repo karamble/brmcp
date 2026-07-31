@@ -191,9 +191,11 @@ sid, mid) in `seq` order, tolerate out-of-order and duplicate chunks, bound
 their reassembly state per peer, per message, and globally, and evict
 partial messages on timeout.
 
-The session lifecycle is standard MCP: the client sends `initialize` as the
-first message of a new sid; a server accepting a part with an unknown sid
-from an authorized peer treats it as a new session; idle sessions expire.
+The session lifecycle is standard MCP: the client opens a new sid with
+`server/discover` (MCP revision 2026-07-28 and later) or `initialize` (the
+legacy handshake, kept for the spec's grace period); a server accepting a
+part with an unknown sid from an authorized peer treats it as a new
+session; idle sessions expire.
 
 ## 5. Architecture
 
