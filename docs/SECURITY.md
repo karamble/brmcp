@@ -69,6 +69,11 @@ evaluated locally in the user's daemon:
   empty token never authorizes), bound to an address the host chooses
   (localhost by convention), and disabled by default. Changing the token
   restarts the listener, severing streams authorized under the old one.
+- Requests may additionally be pinned to a source-IP list (single IPs or
+  CIDR ranges), checked against the connection's real remote address -
+  forwarding headers are deliberately ignored. A denial is answered
+  byte-identically to a bad token, so a probe from a non-allowed address
+  cannot learn that a leaked token is valid.
 - Callable bots are a default-deny allowlist; requests for any other uid
   are refused before any session state exists, and inbound frames from
   unlisted peers are dropped at the router.

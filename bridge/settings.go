@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,6 +33,11 @@ type Settings struct {
 	// AllowedBots is the default-deny list of callable bot uids (64-hex,
 	// matched case-insensitively).
 	AllowedBots []string `json:"allowed_bots"`
+	// AllowedIPs restricts the source addresses the listener accepts:
+	// single IPs or CIDR ranges (IPv4 or IPv6). Empty means any address.
+	// Entries are canonicalized on apply; a request from any other address
+	// is answered with the same generic 401 as a bad token.
+	AllowedIPs []string `json:"allowed_ips,omitempty"`
 	// ApprovalTimeoutSecs bounds how long a call waits for a decision.
 	// Nonpositive selects 120.
 	ApprovalTimeoutSecs int `json:"approval_timeout_secs"`
@@ -86,6 +92,11 @@ func (b *Bridge) ApplySettings(s Settings) error {
 			return fmt.Errorf("allowed bot %q is not a 64-hex uid", bot)
 		}
 	}
+	canonicalIPs, ipPrefixes, err := parseAllowedIPs(s.AllowedIPs)
+	if err != nil {
+		return err
+	}
+	s.AllowedIPs = canonicalIPs
 	if s.Enabled && s.Token == "" {
 		var tok [16]byte
 		if _, err := rand.Read(tok[:]); err != nil {
@@ -96,9 +107,12 @@ func (b *Bridge) ApplySettings(s Settings) error {
 
 	b.mu.Lock()
 	prev := b.settings
+	prevPrefixes := b.ipPrefixes
 	b.settings = s
+	b.ipPrefixes = ipPrefixes
 	if err := b.persistSettingsLocked(); err != nil {
 		b.settings = prev
+		b.ipPrefixes = prevPrefixes
 		b.mu.Unlock()
 		return err
 	}
@@ -153,6 +167,26 @@ func (b *Bridge) loadState() error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	// The API stores validated canonical entries, so an unparseable entry can
+	// appear only through a hand-edited file; it is dropped with a warning so
+	// the operator knows the effective list shrank.
+	var ipEntries []string
+	var ipPrefixes []netip.Prefix
+	for _, e := range b.settings.AllowedIPs {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		c, p, err := parseIPEntry(e)
+		if err != nil {
+			b.logf("brmcp bridge: dropping invalid allowed_ips entry %q from %s", e, b.settingsPath())
+			continue
+		}
+		ipEntries = append(ipEntries, c)
+		ipPrefixes = append(ipPrefixes, p)
+	}
+	b.settings.AllowedIPs = ipEntries
+	b.ipPrefixes = ipPrefixes
 	if raw, err := os.ReadFile(b.spendPath()); err == nil {
 		if err := json.Unmarshal(raw, &b.spend); err != nil {
 			return fmt.Errorf("parse %s: %w", b.spendPath(), err)

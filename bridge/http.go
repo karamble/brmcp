@@ -57,6 +57,7 @@ func (b *Bridge) authMiddleware(next http.Handler) http.Handler {
 		b.mu.Lock()
 		enabled := b.settings.Enabled
 		token := b.settings.Token
+		ipPrefixes := b.ipPrefixes
 		b.mu.Unlock()
 		if !enabled {
 			http.Error(w, "not found", http.StatusNotFound)
@@ -67,6 +68,21 @@ func (b *Bridge) authMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if !remoteIPAllowed(ipPrefixes, r.RemoteAddr) {
+			// Byte-identical to the bad-token response above so a caller
+			// from a non-allowed address cannot learn that the token is
+			// valid. Remembered so the host's dashboard can offer the
+			// observed address for allowing.
+			b.mu.Lock()
+			b.lastDenied = &DeniedAttempt{IP: deniedIP(r.RemoteAddr), At: b.clk.Now()}
+			b.mu.Unlock()
+			b.logf("brmcp bridge: denied request from %s: not in allowed_ips", r.RemoteAddr)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		b.mu.Lock()
+		b.lastDenied = nil
+		b.mu.Unlock()
 		uid := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/mcp/"))
 		if !uidRe.MatchString(uid) || !b.botAllowed(uid) {
 			http.Error(w, "unknown bot", http.StatusNotFound)

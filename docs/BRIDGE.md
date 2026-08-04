@@ -71,12 +71,15 @@ the 2026-07-28 wire must mirror the standardized HTTP headers
 clients do this on their own.
 
 Auth is one bearer token, compared in constant time; an empty token never
-authorizes. The uid must be 64-hex and on the bot allowlist; anything else
-is 404. With `ListenAddr` set the bridge owns the listener and binds only
-while the settings enable it (a token change restarts it, severing streams
-authorized under the old token); with `ListenAddr` empty the host mounts
-`Handler()` and owns that lifecycle itself, and a disabled bridge answers
-404 to everything.
+authorizes. Requests may additionally be restricted to a source-IP list
+(`allowed_ips`); a request from any other address is answered with the
+same generic 401 as a bad token, checked per request so a change needs no
+listener restart. The uid must be 64-hex and on the bot allowlist;
+anything else is 404. With `ListenAddr` set the bridge owns the listener
+and binds only while the settings enable it (a token change restarts it,
+severing streams authorized under the old token); with `ListenAddr` empty
+the host mounts `Handler()` and owns that lifecycle itself, and a disabled
+bridge answers 404 to everything.
 
 ## The spending policy
 
@@ -86,6 +89,10 @@ restarts; sessions of de-listed bots close; enabling with an empty token
 mints a random one.
 
 - `allowed_bots` - default-deny allowlist of callable bot uids.
+- `allowed_ips` - optional source-IP restriction on the listener: single
+  IPs or CIDR ranges (IPv4 or IPv6); empty means any address. The most
+  recent denial is exposed via `LastDenied` (cleared on the next
+  successful auth) so a host UI can offer the observed address.
 - `per_call_cap_atoms`, `per_day_cap_atoms` - hard ceilings; the daily cap
   is enforced over a rolling twenty-four-hour window of the spend log;
   zero means never pay. Caps bind in BOTH modes.

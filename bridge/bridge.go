@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -88,16 +89,18 @@ type Bridge struct {
 	logf   func(format string, args ...any)
 	router *brmcp.Router
 
-	mu       sync.Mutex
-	ctx      context.Context // base context for bot sessions, set by Start
-	settings Settings
-	bots     map[string]*botLink
-	pending  map[string]*pendingPayment
-	spend    []SpendEntry
-	spendSeq int64
-	httpSrv  *http.Server
-	lnAddr   net.Addr
-	closed   bool
+	mu         sync.Mutex
+	ctx        context.Context // base context for bot sessions, set by Start
+	settings   Settings
+	ipPrefixes []netip.Prefix // parsed settings.AllowedIPs; empty = unrestricted
+	lastDenied *DeniedAttempt // latest allowed-IP denial; cleared on next successful auth
+	bots       map[string]*botLink
+	pending    map[string]*pendingPayment
+	spend      []SpendEntry
+	spendSeq   int64
+	httpSrv    *http.Server
+	lnAddr     net.Addr
+	closed     bool
 }
 
 // New validates cfg, loads the persisted settings and spend state, and
