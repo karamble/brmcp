@@ -1,0 +1,35 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # Pinned to the 1.26 line to match the toolchain the rest of the stack is
+      # built and released with, not because 1.27 fails here: this module has no
+      # grpc in its build graph, so the dcrpulse pin's reason does not apply.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Vet
+        run: go vet ./...
+
+      # -race because the bridge serves concurrent agent requests while the
+      # settings API mutates the state they read.
+      - name: Test
+        run: go test -race ./...
