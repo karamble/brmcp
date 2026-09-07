@@ -380,8 +380,21 @@ func TestPerCallCapRefusals(t *testing.T) {
 			if got := fx.payer.callCount(); got != 0 {
 				t.Fatalf("payer called despite cap: %d", got)
 			}
-			if entries, _ := fx.bridge.SpendLog(); len(entries) != 0 {
-				t.Fatalf("refused call recorded spend: %+v", entries)
+			// The refusal is recorded so the operator can see what was
+			// asked for, but no money moved, so it must not consume the
+			// daily budget.
+			entries, today := fx.bridge.SpendLog()
+			if len(entries) != 1 {
+				t.Fatalf("refusal not recorded exactly once: %+v", entries)
+			}
+			if entries[0].Status != "refused" || entries[0].Atoms != paidPrice {
+				t.Fatalf("refusal entry wrong: %+v", entries[0])
+			}
+			if !strings.Contains(entries[0].Err, "per-call cap") {
+				t.Fatalf("refusal reason not recorded: %q", entries[0].Err)
+			}
+			if today != 0 {
+				t.Fatalf("a refusal consumed the daily budget: %d", today)
 			}
 		})
 	}
@@ -520,12 +533,29 @@ func TestApprovalFlow(t *testing.T) {
 	if fx.bridge.ResolvePayment("no-such-id", true) {
 		t.Fatal("unknown id resolved")
 	}
-	// Only the approved call executed and only it recorded spend.
+	// Only the approved call executed. The denial and the timeout are
+	// recorded as refusals, and only the approved one counts as spend.
 	if got := fx.execs.Load(); got != 1 {
 		t.Fatalf("executions: %d != 1", got)
 	}
-	if entries, _ := fx.bridge.SpendLog(); len(entries) != 1 {
+	entries, today := fx.bridge.SpendLog()
+	if len(entries) != 3 {
 		t.Fatalf("spend entries: %+v", entries)
+	}
+	var paid, refused int
+	for _, e := range entries {
+		switch e.Status {
+		case "paid":
+			paid++
+		case "refused":
+			refused++
+		}
+	}
+	if paid != 1 || refused != 2 {
+		t.Fatalf("paid=%d refused=%d, want 1 and 2: %+v", paid, refused, entries)
+	}
+	if today != paidPrice {
+		t.Fatalf("today = %d, want only the approved call to count (%d)", today, paidPrice)
 	}
 }
 
@@ -837,8 +867,10 @@ func TestResolveSpendLateFailure(t *testing.T) {
 	if !fx.bridge.ResolveSpend(botUID, paidPrice, errors.New("no route")) {
 		t.Fatal("late failure did not resolve the pending spend")
 	}
+	// Two entries: the pending payment that failed late, and the refusal
+	// its held budget caused above. Neither counts toward the day.
 	entries, today := fx.bridge.SpendLog()
-	if len(entries) != 1 || today != 0 {
+	if len(entries) != 2 || today != 0 {
 		t.Fatalf("late failure still counted: %+v today=%d", entries, today)
 	}
 	if entries[0].Status != "failed" || entries[0].Err != "no route" {
@@ -864,11 +896,14 @@ func TestResolveSpendLateFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// All three survive in order - the late failure, the refusal its held
+	// budget caused, and the call that went through once it was released -
+	// and only the paid one counts toward the day.
 	entries, today = b2.SpendLog()
-	if len(entries) != 2 || today != paidPrice {
+	if len(entries) != 3 || today != paidPrice {
 		t.Fatalf("reloaded log wrong: %+v today=%d", entries, today)
 	}
-	if entries[0].Status != "failed" || entries[1].Status != "paid" {
+	if entries[0].Status != "failed" || entries[1].Status != "refused" || entries[2].Status != "paid" {
 		t.Fatalf("reloaded statuses wrong: %+v", entries)
 	}
 }

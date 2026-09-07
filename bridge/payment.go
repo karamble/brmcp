@@ -69,6 +69,10 @@ const (
 	spendPending = "pending"
 	spendPaid    = "paid"
 	spendFailed  = "failed"
+	// spendRefused is an attempt stopped before it reached the rail: a cap,
+	// or the operator declining. No money moved, but the operator still
+	// wants to see what was asked for.
+	spendRefused = "refused"
 )
 
 // spendKeep bounds the persisted spend log; entries still inside the
@@ -94,15 +98,20 @@ func (b *Bridge) settle(ctx context.Context, bot, tool string, pr *brmcp.Payment
 
 	// Caps bound BOTH modes; zero means zero, approval cannot override.
 	if s.PerCallCapAtoms <= 0 || atoms > s.PerCallCapAtoms {
-		return fmt.Errorf("%d atoms exceeds the per-call cap (%d)", atoms, s.PerCallCapAtoms)
+		err := fmt.Errorf("%d atoms exceeds the per-call cap (%d)", atoms, s.PerCallCapAtoms)
+		b.refuse(bot, tool, atoms, err.Error())
+		return err
 	}
 	if s.PerDayCapAtoms <= 0 || spentToday+atoms > s.PerDayCapAtoms {
-		return fmt.Errorf("%d atoms would exceed the daily cap (%d spent of %d)",
+		err := fmt.Errorf("%d atoms would exceed the daily cap (%d spent of %d)",
 			atoms, spentToday, s.PerDayCapAtoms)
+		b.refuse(bot, tool, atoms, err.Error())
+		return err
 	}
 	if s.Mode == "approval" {
 		if err := b.awaitApproval(ctx, bot, tool, atoms,
 			time.Duration(s.ApprovalTimeoutSecs)*time.Second); err != nil {
+			b.refuse(bot, tool, atoms, err.Error())
 			return err
 		}
 	}
@@ -230,6 +239,22 @@ func (b *Bridge) recordSpendLocked(bot, tool, rail string, atoms int64) int64 {
 	return seq
 }
 
+// refuse records an attempt stopped before it reached the rail, so the
+// operator can see what an agent asked for and why it was denied. The caller
+// still returns the same error to the agent.
+func (b *Bridge) refuse(bot, tool string, atoms int64, reason string) {
+	b.mu.Lock()
+	b.spendSeq++
+	b.spend = append(b.spend, SpendEntry{
+		TS: b.clk.Now().Unix(), Bot: bot, Tool: tool, Rail: "tip", Atoms: atoms,
+		Status: spendRefused, Err: reason, seq: b.spendSeq,
+	})
+	if err := b.persistSpendLocked(); err != nil {
+		b.logf("brmcp bridge: persist spend log: %v", err)
+	}
+	b.mu.Unlock()
+}
+
 // markSpendLocked records the terminal outcome of a payment launched in
 // this process.
 func (b *Bridge) markSpendLocked(seq int64, status, errStr string) {
@@ -276,13 +301,21 @@ func (b *Bridge) ResolveSpend(payeeUID string, atoms int64, payErr error) bool {
 	return false
 }
 
+// countsTowardCap reports whether an entry's atoms moved, or may still move,
+// and so belong in the rolling daily total. A refusal never reached the rail
+// and a definitive failure gave the money back. An empty status predates
+// outcome tracking and counts like paid.
+func countsTowardCap(status string) bool {
+	return status != spendFailed && status != spendRefused
+}
+
 // spentSinceLocked sums spends after the cutoff (the rolling per-day cap).
-// Failed payments moved no money and do not count.
+// Failed and refused entries moved no money and do not count.
 func (b *Bridge) spentSinceLocked(cutoff time.Time) int64 {
 	var total int64
 	cut := cutoff.Unix()
 	for _, s := range b.spend {
-		if s.TS >= cut && s.Status != spendFailed {
+		if s.TS >= cut && countsTowardCap(s.Status) {
 			total += s.Atoms
 		}
 	}
@@ -298,7 +331,8 @@ func (b *Bridge) persistSpendLocked() error {
 		first := len(b.spend) - spendKeep
 		cut := b.clk.Now().Add(-24 * time.Hour).Unix()
 		for i := 0; i < first; i++ {
-			if b.spend[i].TS >= cut || b.spend[i].Status == spendPending {
+			if (b.spend[i].TS >= cut && countsTowardCap(b.spend[i].Status)) ||
+				b.spend[i].Status == spendPending {
 				first = i
 				break
 			}
