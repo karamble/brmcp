@@ -92,6 +92,8 @@ type Bridge struct {
 	mu         sync.Mutex
 	ctx        context.Context // base context for bot sessions, set by Start
 	settings   Settings
+	tokenHash  [32]byte       // sha256 of the bearer token; the plaintext is never kept
+	hasToken   bool           // false means the gate refuses every request
 	ipPrefixes []netip.Prefix // parsed settings.AllowedIPs; empty = unrestricted
 	lastDenied *DeniedAttempt // latest allowed-IP denial; cleared on next successful auth
 	bots       map[string]*botLink

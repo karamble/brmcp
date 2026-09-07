@@ -6,6 +6,7 @@ package bridge
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,8 +22,15 @@ import (
 // data dir. The listen address is deliberately not here: it is host startup
 // configuration, not a runtime setting.
 type Settings struct {
-	Enabled bool   `json:"enabled"`
-	Token   string `json:"token"`
+	Enabled bool `json:"enabled"`
+	// TokenSet reports that a bearer token exists. The token is stored only as
+	// a SHA-256 hash, so the plaintext is returned by the call that mints it
+	// (ApplySettings) and is never readable afterwards. Reply-only.
+	TokenSet bool `json:"token_set"`
+	// RecycleToken asks for a fresh token, severing every session authorized
+	// under the old one. Request-only, and the only way to change the token:
+	// no caller supplies a token value, so none can set a weak one.
+	RecycleToken bool `json:"recycle_token,omitempty"`
 	// Mode is "approval" (every payment waits for a human decision) or
 	// "autopay" (payments under the caps run unattended). Any other value
 	// is coerced to "approval".
@@ -44,6 +52,15 @@ type Settings struct {
 	// TipWaitSecs bounds how long a call waits for the payment to complete
 	// before giving up. Nonpositive selects 180.
 	TipWaitSecs int `json:"tip_wait_secs"`
+}
+
+// storedSettings is the on-disk shape: the policy plus the token's hash. The
+// plaintext is never written. TokenSet and RecycleToken ride along in the
+// embedded struct and are recomputed on load rather than trusted, so there is
+// no second field list to keep in sync with Settings.
+type storedSettings struct {
+	Settings
+	TokenHash string `json:"token_hash,omitempty"`
 }
 
 func (s Settings) withDefaults() Settings {
@@ -80,41 +97,55 @@ func (b *Bridge) Settings() Settings {
 }
 
 // ApplySettings validates, persists, and hot-applies s: enabling starts the
-// owned listener, disabling stops it, and a token change while enabled
-// restarts it, severing streams authorized under the old token. Bots
-// removed from the allowlist have their live sessions closed. Enabling with
-// an empty token mints a random one, visible via Settings. Validation and
+// owned listener, disabling stops it, and minting a token while enabled
+// restarts it, severing streams authorized under the old one. Bots removed
+// from the allowlist have their live sessions closed. Validation and
 // persistence failures leave the prior settings active.
-func (b *Bridge) ApplySettings(s Settings) error {
+//
+// A token is minted when s.RecycleToken is set, or when enabling with none
+// stored. The returned plaintext is the only time it is ever readable: what is
+// kept is its hash. Every other call returns "" and leaves the token untouched
+// - an empty token is not a request to mint, or an ordinary save would cut off
+// every agent using the current one.
+func (b *Bridge) ApplySettings(s Settings) (string, error) {
 	s = s.withDefaults()
 	for _, bot := range s.AllowedBots {
 		if !uidRe.MatchString(strings.ToLower(bot)) {
-			return fmt.Errorf("allowed bot %q is not a 64-hex uid", bot)
+			return "", fmt.Errorf("allowed bot %q is not a 64-hex uid", bot)
 		}
 	}
 	canonicalIPs, ipPrefixes, err := parseAllowedIPs(s.AllowedIPs)
 	if err != nil {
-		return err
+		return "", err
 	}
 	s.AllowedIPs = canonicalIPs
-	if s.Enabled && s.Token == "" {
-		var tok [16]byte
-		if _, err := rand.Read(tok[:]); err != nil {
-			return err
-		}
-		s.Token = hex.EncodeToString(tok[:])
-	}
+	recycle := s.RecycleToken
+	s.RecycleToken = false
 
 	b.mu.Lock()
-	prev := b.settings
+	minted := ""
+	if recycle || (s.Enabled && !b.hasToken) {
+		var tok [16]byte
+		if _, err := rand.Read(tok[:]); err != nil {
+			b.mu.Unlock()
+			return "", err
+		}
+		minted = hex.EncodeToString(tok[:])
+	}
+	prev, prevHash, prevHas := b.settings, b.tokenHash, b.hasToken
 	prevPrefixes := b.ipPrefixes
+	if minted != "" {
+		b.tokenHash = sha256.Sum256([]byte(minted))
+		b.hasToken = true
+	}
+	s.TokenSet = b.hasToken
 	b.settings = s
 	b.ipPrefixes = ipPrefixes
 	if err := b.persistSettingsLocked(); err != nil {
-		b.settings = prev
+		b.settings, b.tokenHash, b.hasToken = prev, prevHash, prevHas
 		b.ipPrefixes = prevPrefixes
 		b.mu.Unlock()
-		return err
+		return "", err
 	}
 	// Sessions of bots no longer on the allowlist are torn down; the router
 	// and the HTTP gate already refuse their traffic.
@@ -132,7 +163,7 @@ func (b *Bridge) ApplySettings(s Settings) error {
 			lerr = b.startListenerLocked()
 		case !s.Enabled && b.httpSrv != nil:
 			b.stopListenerLocked()
-		case s.Enabled && s.Token != prev.Token:
+		case s.Enabled && minted != "":
 			b.stopListenerLocked()
 			lerr = b.startListenerLocked()
 		}
@@ -141,7 +172,7 @@ func (b *Bridge) ApplySettings(s Settings) error {
 	for _, l := range dropped {
 		l.reset()
 	}
-	return lerr
+	return minted, lerr
 }
 
 func (s Settings) allowsBot(uid string) bool {
@@ -159,14 +190,27 @@ func (b *Bridge) spendPath() string    { return filepath.Join(b.cfg.DataDir, "mc
 func (b *Bridge) loadState() error {
 	b.settings = Settings{}.withDefaults()
 	if raw, err := os.ReadFile(b.settingsPath()); err == nil {
-		var s Settings
-		if err := json.Unmarshal(raw, &s); err != nil {
+		var st storedSettings
+		if err := json.Unmarshal(raw, &st); err != nil {
 			return fmt.Errorf("parse %s: %w", b.settingsPath(), err)
 		}
-		b.settings = s.withDefaults()
+		// The hash is the only token state there is: a file without one has no
+		// token, and the gate refuses everything until one is minted. Nothing
+		// is carried over from an older plaintext field.
+		if st.TokenHash != "" {
+			h, err := hex.DecodeString(st.TokenHash)
+			if err != nil || len(h) != sha256.Size {
+				return fmt.Errorf("parse %s: token_hash is not a sha256 hex digest", b.settingsPath())
+			}
+			copy(b.tokenHash[:], h)
+			b.hasToken = true
+		}
+		b.settings = st.Settings.withDefaults()
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	b.settings.TokenSet = b.hasToken
+	b.settings.RecycleToken = false
 	// The API stores validated canonical entries, so an unparseable entry can
 	// appear only through a hand-edited file; it is dropped with a warning so
 	// the operator knows the effective list shrank.
@@ -198,7 +242,11 @@ func (b *Bridge) loadState() error {
 }
 
 func (b *Bridge) persistSettingsLocked() error {
-	raw, err := json.MarshalIndent(b.settings, "", "  ")
+	st := storedSettings{Settings: b.settings}
+	if b.hasToken {
+		st.TokenHash = hex.EncodeToString(b.tokenHash[:])
+	}
+	raw, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}

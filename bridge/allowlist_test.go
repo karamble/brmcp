@@ -5,6 +5,8 @@
 package bridge_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -48,7 +50,7 @@ func applyAllowedIPs(t *testing.T, b *bridge.Bridge, ips []string) {
 	t.Helper()
 	s := b.Settings()
 	s.AllowedIPs = ips
-	if err := b.ApplySettings(s); err != nil {
+	if _, err := b.ApplySettings(s); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -78,7 +80,7 @@ func TestAllowedIPCanonicalization(t *testing.T) {
 	for _, bad := range []string{"nonsense", "10.0.0.1/33", "::ffff:10.0.0.0/95"} {
 		s := fx.bridge.Settings()
 		s.AllowedIPs = []string{bad}
-		err := fx.bridge.ApplySettings(s)
+		_, err := fx.bridge.ApplySettings(s)
 		if err == nil || !strings.Contains(err.Error(), bad) {
 			t.Errorf("entry %q: want error naming it, got %v", bad, err)
 		}
@@ -96,7 +98,7 @@ func TestApplySettingsRejectsInvalidAllowedIP(t *testing.T) {
 
 	s := fx.bridge.Settings()
 	s.AllowedIPs = []string{"10.0.0.1", "banana"}
-	if err := fx.bridge.ApplySettings(s); err == nil {
+	if _, err := fx.bridge.ApplySettings(s); err == nil {
 		t.Fatal("invalid allowed_ips entry accepted")
 	}
 	if got := fx.bridge.Settings(); !reflect.DeepEqual(got, prev) {
@@ -143,7 +145,13 @@ func TestLegacySettingsUnrestricted(t *testing.T) {
 	fx := newFixture(t, fixtureOpts{})
 
 	dataDir := t.TempDir()
-	legacy := `{"enabled":true,"token":"legacy-token-0123456789abcdef","mode":"autopay","per_call_cap_atoms":1,"per_day_cap_atoms":1,"allowed_bots":["` + botUID + `"],"approval_timeout_secs":120,"tip_wait_secs":180}`
+	// "Legacy" here means written before allowed_ips existed, which is what
+	// this test is about; the token is stored as its hash like any other.
+	const legacyToken = "legacy-token-0123456789abcdef"
+	sum := sha256.Sum256([]byte(legacyToken))
+	legacy := `{"enabled":true,"token_hash":"` + hex.EncodeToString(sum[:]) +
+		`","mode":"autopay","per_call_cap_atoms":1,"per_day_cap_atoms":1,"allowed_bots":["` +
+		botUID + `"],"approval_timeout_secs":120,"tip_wait_secs":180}`
 	if err := os.WriteFile(filepath.Join(dataDir, "mcpclient.json"), []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +165,7 @@ func TestLegacySettingsUnrestricted(t *testing.T) {
 	if got := b.Settings().AllowedIPs; len(got) != 0 {
 		t.Fatalf("legacy file grew allowed_ips: %v", got)
 	}
-	if got := gateStatus(t, b, "legacy-token-0123456789abcdef", "203.0.113.9:7"); got != http.StatusNotFound {
+	if got := gateStatus(t, b, legacyToken, "203.0.113.9:7"); got != http.StatusNotFound {
 		t.Fatalf("legacy settings must not restrict remotes: %d != 404", got)
 	}
 	// An unrestricted settings marshal keeps the legacy file shape.
@@ -282,14 +290,14 @@ func TestAllowedIPsHotApplyOwnedListener(t *testing.T) {
 	if err := b.Start(fx.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.ApplySettings(bridge.Settings{Enabled: true, AllowedBots: []string{botUID}}); err != nil {
+	token, err := b.ApplySettings(bridge.Settings{Enabled: true, AllowedBots: []string{botUID}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	addr := b.ListenAddr()
 	if addr == nil {
 		t.Fatal("listener not bound on enable")
 	}
-	token := b.Settings().Token
 	url := "http://" + addr.String() + "/mcp/not-a-uid"
 	if got := httpStatus(t, http.MethodPost, url, token); got != http.StatusNotFound {
 		t.Fatalf("pre-restriction request: %d != 404", got)
@@ -299,7 +307,7 @@ func TestAllowedIPsHotApplyOwnedListener(t *testing.T) {
 	// bound (no restart), yet the very next request is refused.
 	s := b.Settings()
 	s.AllowedIPs = []string{"10.0.0.0/8"}
-	if err := b.ApplySettings(s); err != nil {
+	if _, err := b.ApplySettings(s); err != nil {
 		t.Fatal(err)
 	}
 	if got := b.ListenAddr(); got == nil || got.String() != addr.String() {
@@ -312,7 +320,7 @@ func TestAllowedIPsHotApplyOwnedListener(t *testing.T) {
 	// Allowing the loopback restores access, again without a restart.
 	s = b.Settings()
 	s.AllowedIPs = []string{"127.0.0.1"}
-	if err := b.ApplySettings(s); err != nil {
+	if _, err := b.ApplySettings(s); err != nil {
 		t.Fatal(err)
 	}
 	if got := httpStatus(t, http.MethodPost, url, token); got != http.StatusNotFound {

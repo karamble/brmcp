@@ -6,6 +6,7 @@ package bridge
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"net"
@@ -16,8 +17,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Handler returns the bridge's HTTP surface: constant-time bearer auth (an
-// empty token never authorizes), the /mcp/<64-hex-uid> path gate (404 for
+// Handler returns the bridge's HTTP surface: constant-time bearer auth against
+// the stored hash (with no token stored nothing authorizes), the
+// /mcp/<64-hex-uid> path gate (404 for
 // malformed or non-allowlisted uids), and the streamable-HTTP MCP proxy.
 // While the bridge is disabled it answers 404 to everything. Hosts that
 // mount the handler themselves own the listener lifecycle, including
@@ -56,15 +58,17 @@ func (b *Bridge) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		enabled := b.settings.Enabled
-		token := b.settings.Token
+		want, hasToken := b.tokenHash, b.hasToken
 		ipPrefixes := b.ipPrefixes
 		b.mu.Unlock()
 		if !enabled {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if token == "" || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+		// Only the hash is held, so the presented bearer is hashed and the
+		// digests compared. With no token stored nothing can authorize.
+		got := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
+		if !hasToken || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

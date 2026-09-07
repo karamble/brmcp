@@ -65,7 +65,7 @@ func TestBearerAndPathGate(t *testing.T) {
 	// Disabling the bridge blanks the whole surface.
 	s := fx.bridge.Settings()
 	s.Enabled = false
-	if err := fx.bridge.ApplySettings(s); err != nil {
+	if _, err := fx.bridge.ApplySettings(s); err != nil {
 		t.Fatal(err)
 	}
 	if got := httpStatus(t, http.MethodPost, fx.endpoint(botUID), fx.token); got != http.StatusNotFound {
@@ -73,9 +73,10 @@ func TestBearerAndPathGate(t *testing.T) {
 	}
 }
 
-func TestEmptyTokenNeverAuthorizes(t *testing.T) {
-	// A crafted settings file can carry enabled with an empty token
-	// (ApplySettings would mint one); the gate must still refuse.
+func TestNoTokenNeverAuthorizes(t *testing.T) {
+	// A settings file can carry enabled with no token hash - a hand-edited
+	// file, or one written before a token was ever minted. The gate must
+	// refuse everything rather than let an absent token match.
 	fx := newFixture(t, fixtureOpts{})
 
 	dataDir := t.TempDir()
@@ -93,7 +94,7 @@ func TestEmptyTokenNeverAuthorizes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if !b.Settings().Enabled || b.Settings().Token != "" {
+	if !b.Settings().Enabled || b.Settings().TokenSet {
 		t.Fatalf("seed not loaded: %+v", b.Settings())
 	}
 	srv := httpTestServer(t, b)
@@ -115,20 +116,24 @@ func TestSettingsHotApply(t *testing.T) {
 		t.Fatalf("defaults not applied: %+v", s)
 	}
 
-	// Enabling with an empty token mints one.
+	// Enabling with nothing stored mints, and says so exactly once.
 	s.Enabled = true
 	s.AllowedBots = []string{botUID}
-	if err := b.ApplySettings(s); err != nil {
+	minted, err := b.ApplySettings(s)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if tok := b.Settings().Token; len(tok) != 32 {
-		t.Fatalf("minted token: %q", tok)
+	if len(minted) != 32 {
+		t.Fatalf("minted token: %q", minted)
+	}
+	if !b.Settings().TokenSet {
+		t.Fatal("TokenSet is false after minting")
 	}
 
 	// A non-hex bot uid is rejected and the prior settings survive.
 	bad := b.Settings()
 	bad.AllowedBots = []string{"not-a-uid"}
-	if err := b.ApplySettings(bad); err == nil {
+	if _, err := b.ApplySettings(bad); err == nil {
 		t.Fatal("invalid bot uid accepted")
 	}
 	if got := b.Settings().AllowedBots; len(got) != 1 || !strings.EqualFold(got[0], botUID) {
@@ -138,7 +143,7 @@ func TestSettingsHotApply(t *testing.T) {
 	// Unknown modes coerce to approval (fail safe).
 	odd := b.Settings()
 	odd.Mode = "bogus"
-	if err := b.ApplySettings(odd); err != nil {
+	if _, err := b.ApplySettings(odd); err != nil {
 		t.Fatal(err)
 	}
 	if got := b.Settings().Mode; got != "approval" {
@@ -154,10 +159,10 @@ func TestSettingsHotApply(t *testing.T) {
 	prev := b.Settings()
 	next := prev
 	next.PerCallCapAtoms = 42
-	if err := b.ApplySettings(next); err == nil {
+	if _, err := b.ApplySettings(next); err == nil {
 		t.Fatal("apply succeeded despite an unwritable settings file")
 	}
-	if got := b.Settings(); got.PerCallCapAtoms != prev.PerCallCapAtoms || got.Token != prev.Token {
+	if got := b.Settings(); got.PerCallCapAtoms != prev.PerCallCapAtoms || got.TokenSet != prev.TokenSet {
 		t.Fatalf("settings not rolled back: %+v", got)
 	}
 	os.Chmod(settingsFile, 0o600)
@@ -189,41 +194,45 @@ func TestOwnedListenerLifecycle(t *testing.T) {
 	}
 
 	s := bridge.Settings{Enabled: true, AllowedBots: []string{botUID}}
-	if err := b.ApplySettings(s); err != nil {
+	token, err := b.ApplySettings(s)
+	if err != nil {
 		t.Fatal(err)
 	}
 	addr := b.ListenAddr()
 	if addr == nil {
 		t.Fatal("listener not bound on enable")
 	}
-	token := b.Settings().Token
 	url := "http://" + addr.String() + "/mcp/" + botUID
 	if got := httpStatus(t, http.MethodPost, url, token); got == http.StatusUnauthorized {
 		t.Fatalf("minted token rejected: %d", got)
 	}
 
-	// A token change restarts the listener, severing old-token clients.
+	// Recycling restarts the listener, severing old-token clients.
 	s = b.Settings()
-	s.Token = "rotated-token-0123456789abcdef"
-	if err := b.ApplySettings(s); err != nil {
+	s.RecycleToken = true
+	rotated, err := b.ApplySettings(s)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if rotated == "" || rotated == token {
+		t.Fatalf("recycle returned %q, want a fresh token", rotated)
 	}
 	addr2 := b.ListenAddr()
 	if addr2 == nil {
-		t.Fatal("listener gone after token change")
+		t.Fatal("listener gone after the recycle")
 	}
 	url2 := "http://" + addr2.String() + "/mcp/" + botUID
 	if got := httpStatus(t, http.MethodPost, url2, token); got != http.StatusUnauthorized {
 		t.Fatalf("old token still authorized: %d", got)
 	}
-	if got := httpStatus(t, http.MethodPost, url2, s.Token); got == http.StatusUnauthorized {
+	if got := httpStatus(t, http.MethodPost, url2, rotated); got == http.StatusUnauthorized {
 		t.Fatalf("new token rejected: %d", got)
 	}
 
 	// Disable stops the listener.
 	s = b.Settings()
 	s.Enabled = false
-	if err := b.ApplySettings(s); err != nil {
+	if _, err := b.ApplySettings(s); err != nil {
 		t.Fatal(err)
 	}
 	if b.ListenAddr() != nil {
@@ -244,7 +253,7 @@ func TestTeardown(t *testing.T) {
 	// De-listing the bot closes its session and gates new requests.
 	s := fx.bridge.Settings()
 	s.AllowedBots = nil
-	if err := fx.bridge.ApplySettings(s); err != nil {
+	if _, err := fx.bridge.ApplySettings(s); err != nil {
 		t.Fatal(err)
 	}
 	if got := httpStatus(t, http.MethodPost, fx.endpoint(botUID), fx.token); got != http.StatusNotFound {

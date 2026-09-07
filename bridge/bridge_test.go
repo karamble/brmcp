@@ -233,7 +233,6 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 
 	s := bridge.Settings{
 		Enabled:         true,
-		Token:           "test-token-0123456789abcdef",
 		Mode:            "autopay",
 		PerCallCapAtoms: 10_000,
 		PerDayCapAtoms:  100_000,
@@ -242,10 +241,13 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 	if o.settings != nil {
 		s = *o.settings
 	}
-	if err := b.ApplySettings(s); err != nil {
+	// Enabling with nothing stored mints, and the returned plaintext is the
+	// only time it is readable.
+	minted, err := b.ApplySettings(s)
+	if err != nil {
 		t.Fatal(err)
 	}
-	fx.token = b.Settings().Token
+	fx.token = minted
 
 	fx.httpSrv = httptest.NewServer(b.Handler())
 	t.Cleanup(fx.httpSrv.Close)
@@ -359,7 +361,6 @@ func TestPerCallCapRefusals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fx := newFixture(t, fixtureOpts{settings: &bridge.Settings{
 				Enabled:         true,
-				Token:           "test-token-0123456789abcdef",
 				Mode:            "autopay",
 				PerCallCapAtoms: cap,
 				PerDayCapAtoms:  100_000,
@@ -390,7 +391,6 @@ func TestDailyCapWindow(t *testing.T) {
 	clk := newTestClock(true)
 	fx := newFixture(t, fixtureOpts{clk: clk, settings: &bridge.Settings{
 		Enabled:         true,
-		Token:           "test-token-0123456789abcdef",
 		Mode:            "autopay",
 		PerCallCapAtoms: paidPrice,
 		PerDayCapAtoms:  2 * paidPrice,
@@ -436,7 +436,6 @@ func TestApprovalFlow(t *testing.T) {
 	clk := newTestClock(false)
 	fx := newFixture(t, fixtureOpts{clk: clk, settings: &bridge.Settings{
 		Enabled:         true,
-		Token:           "test-token-0123456789abcdef",
 		Mode:            "approval",
 		PerCallCapAtoms: 10_000,
 		PerDayCapAtoms:  100_000,
@@ -685,7 +684,6 @@ func TestSpendPrunePreservesWindow(t *testing.T) {
 		},
 		settings: &bridge.Settings{
 			Enabled:         true,
-			Token:           "test-token-0123456789abcdef",
 			Mode:            "autopay",
 			PerCallCapAtoms: paidPrice,
 			PerDayCapAtoms:  seeded + 2*paidPrice,
@@ -750,7 +748,6 @@ func TestPayFailureNotCounted(t *testing.T) {
 func TestPayTimeoutStaysCounted(t *testing.T) {
 	fx := newFixture(t, fixtureOpts{settings: &bridge.Settings{
 		Enabled:         true,
-		Token:           "test-token-0123456789abcdef",
 		Mode:            "autopay",
 		PerCallCapAtoms: 10_000,
 		PerDayCapAtoms:  100_000,
@@ -790,7 +787,6 @@ func lateOutcomeFixture(t *testing.T) *fixture {
 	t.Helper()
 	fx := newFixture(t, fixtureOpts{settings: &bridge.Settings{
 		Enabled:         true,
-		Token:           "test-token-0123456789abcdef",
 		Mode:            "autopay",
 		PerCallCapAtoms: 10_000,
 		PerDayCapAtoms:  paidPrice, // exactly one launch fits the day
@@ -914,7 +910,6 @@ func TestResolveSpendLatePaid(t *testing.T) {
 func TestResolveSpendOldestFirst(t *testing.T) {
 	fx := newFixture(t, fixtureOpts{settings: &bridge.Settings{
 		Enabled:         true,
-		Token:           "test-token-0123456789abcdef",
 		Mode:            "autopay",
 		PerCallCapAtoms: 10_000,
 		PerDayCapAtoms:  2 * paidPrice,
@@ -1187,14 +1182,14 @@ func TestLegacyBotFallback(t *testing.T) {
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.ApplySettings(bridge.Settings{
+	token, err := b.ApplySettings(bridge.Settings{
 		Enabled:         true,
-		Token:           "test-token-0123456789abcdef",
 		Mode:            "autopay",
 		PerCallCapAtoms: 10_000,
 		PerDayCapAtoms:  100_000,
 		AllowedBots:     []string{botUID},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	httpSrv := httptest.NewServer(b.Handler())
@@ -1202,7 +1197,7 @@ func TestLegacyBotFallback(t *testing.T) {
 
 	tr := &mcp.StreamableClientTransport{
 		Endpoint:   httpSrv.URL + "/mcp/" + botUID,
-		HTTPClient: &http.Client{Transport: bearerTransport{"test-token-0123456789abcdef"}},
+		HTTPClient: &http.Client{Transport: bearerTransport{token}},
 	}
 	cl := mcp.NewClient(&mcp.Implementation{Name: "agent", Version: "0"}, nil)
 	session, err := cl.Connect(ctx, tr, nil)
