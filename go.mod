@@ -1,6 +1,6 @@
 module github.com/karamble/brmcp
 
-go 1.26.2
+go 1.25.0
 
 require (
 	github.com/companyzero/bisonrelay v0.2.5-0.20251216165537-8b1a3b4bd3d6
