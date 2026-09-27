@@ -6,56 +6,74 @@ exposes one local streamable-HTTP MCP endpoint per allowed Bison Relay bot
 over the relay, and settles `payment_required` refusals under the user's
 spending policy. To the agent the endpoint is an ordinary MCP server: a URL
 and a bearer token, no Bison Relay awareness, no wallet, no keys. brclientd
-is the reference host.
+is the reference host, through the `brclient` package.
 
-## What the host supplies
+## Hosting it on an embedded Bison Relay client
 
-    b, err := bridge.New(bridge.Config{
+A daemon that embeds `github.com/companyzero/bisonrelay/client` attaches
+the bridge in one call. `brclient.Attach` supplies the PM sender, a tip
+payer on the client's own tip flow, the inbound PM feed, and the recording
+of late tip outcomes in the spend log:
+
+    b, err := brclient.Attach(c, bridge.Config{
         DataDir:    dataDir,           // holds mcpclient.json + mcpspend.json
-        Sender:     sender,            // brmcp.PMSender: uid -> private message
-        Payer:      payer,             // settles payments (below)
         ListenAddr: "127.0.0.1:8891",  // or "" to mount b.Handler() yourself
         Name:       "mydaemon",        // client identity + refusal-note prefix
-        Logf:       log.Printf,
+        Log:        backend.Logger("MCPC"),
     })
     if err != nil { ... }
     if err := b.Start(ctx); err != nil { ... } // binds while enabled; ctx cancel closes
 
+A `Start` error means the listener did not bind. The bridge stays usable
+and a later settings change retries the bind, so a host may log it and go
+on.
+
+Peers are addressed by uid only, never by nick.
+
+## Keeping envelopes out of chat
+
+The bridge consumes brmcp envelopes from the PM feed, but the host still
+receives them as ordinary private messages. Every place the host shows or
+reacts to chat (conversation views, unread badges, notifications, content
+filters) must skip messages for which `brmcp.IsEnvelope` reports true, or
+agent traffic shows up as chat.
+
+## Other hosts
+
+A host on another rail wires `bridge.New` itself:
+
+    b, err := bridge.New(bridge.Config{
+        DataDir: dataDir,
+        Sender:  sender, // brmcp.PMSender: uid -> private message
+        Payer:   payer,  // settles payments (below)
+        ...
+    })
     // Feed EVERY inbound private message; non-envelopes are ignored.
     onPM(func(fromUID, text string) { b.HandlePM(fromUID, text) })
 
 - **Sender** delivers one PM body to a peer uid. The bridge frames and
   chunks; the host only sends text.
-- **Inbound feed**: the host calls `HandlePM` for every PM it receives.
-  Chat is unaffected; only envelope frames are consumed.
 - **Payer** performs one blocking payment of atoms to a peer uid and
   returns nil only on confirmed settlement. The ctx carries the settings'
   payment-wait deadline. Error text reaches the agent verbatim after
-  "payment not made:", so word it for humans. Hosts on Bison Relay's tip
-  flow correlate their asynchronous tip-progress notifications with
-  `TipMatcher`:
+  "payment not made:", so word it for humans.
 
-      matcher := bridge.NewTipMatcher()
-      // From the tip progress notification, terminal events only:
-      //   matcher.Resolve(payeeUID, amtMAtoms, errOrNil)
-      payer := bridge.PayerFunc(func(ctx context.Context, uid string, atoms int64) error {
-          w := matcher.Expect(uid, atoms*1000) // tips are milliatoms
-          if err := tipUser(ctx, uid, atoms); err != nil {
-              w.Cancel()
-              return fmt.Errorf("tip: %w", err)
-          }
-          select {
-          case err := <-w.Done():
-              if err != nil {
-                  return fmt.Errorf("tip failed: %w", err)
-              }
-              return nil
-          case <-ctx.Done():
-              w.Cancel()
-              return errors.New("tip not confirmed in time; the attempt keeps " +
-                  "running in the background and still credits the bot")
-          }
-      })
+Hosts that pay with Bison Relay tips use `bridge.TipPayer` rather than
+writing one: it starts the tip, waits for the matching tip-progress event,
+and reports outcomes that arrive after the wait to a late handler.
+
+    payer := bridge.NewTipPayer(func(ctx context.Context, uid string, atoms int64) error {
+        return startTip(ctx, uid, atoms) // dispatch only; the outcome comes below
+    })
+    // From every tip-progress event:
+    //   payer.Progress(payeeUID, amtMAtoms, completed, attemptErr, willRetry)
+    b, err := bridge.New(bridge.Config{..., Payer: payer})
+    payer.SetLate(func(uid string, atoms int64, err error) { b.ResolveSpend(uid, atoms, err) })
+
+Bots that reach their client over clientrpc (bisonbotkit) get the same
+pieces from the `botkit` package: `botkit.Sender`, `botkit.NewTipPayer`,
+`botkit.HandleTipProgress`, and `botkit.LateBot` for a bot that connects
+after start.
 
 ## The endpoint
 
