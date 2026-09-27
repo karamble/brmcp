@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/decred/slog"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -56,8 +57,8 @@ type RouterConfig struct {
 	// dropped. Zero selects 8; negative removes the bound. Locally dialed
 	// sessions are not bounded.
 	MaxSessionsPerPeer int
-	// Logf, when non-nil, receives diagnostic lines.
-	Logf func(format string, args ...any)
+	// Log receives diagnostic lines; nil discards them.
+	Log slog.Logger
 }
 
 // Router demuxes envelope parts arriving on the host's single PM stream
@@ -85,6 +86,9 @@ func NewRouter(cfg RouterConfig) *Router {
 	}
 	if cfg.MaxSessionsPerPeer == 0 {
 		cfg.MaxSessionsPerPeer = 8
+	}
+	if cfg.Log == nil {
+		cfg.Log = slog.Disabled
 	}
 	r := &Router{
 		cfg:      cfg,
@@ -124,16 +128,10 @@ func (r *Router) sweep() {
 			}
 			r.mu.Unlock()
 			for _, c := range idle {
-				r.logf("brmcp: closing idle session %s", c.SessionID())
+				r.cfg.Log.Debugf("closing idle session %s", c.SessionID())
 				c.Close()
 			}
 		}
-	}
-}
-
-func (r *Router) logf(format string, args ...any) {
-	if r.cfg.Logf != nil {
-		r.cfg.Logf(format, args...)
 	}
 }
 
@@ -145,12 +143,12 @@ func (r *Router) HandlePM(peer, text string) {
 		return
 	}
 	if r.cfg.Allow != nil && !r.cfg.Allow(peer) {
-		r.logf("brmcp: dropping part from disallowed peer %s", peer)
+		r.cfg.Log.Debugf("dropping part from disallowed peer %s", peer)
 		return
 	}
 	payload, err := r.asm.Add(peer, part, time.Now())
 	if err != nil {
-		r.logf("brmcp: reassembly from %s: %v", peer, err)
+		r.cfg.Log.Warnf("reassembly from %s: %v", peer, err)
 		return
 	}
 	if payload == nil {
@@ -158,7 +156,7 @@ func (r *Router) HandlePM(peer, text string) {
 	}
 	msg, err := jsonrpc.DecodeMessage(payload)
 	if err != nil {
-		r.logf("brmcp: bad JSON-RPC payload from %s: %v", peer, err)
+		r.cfg.Log.Warnf("bad JSON-RPC payload from %s: %v", peer, err)
 		return
 	}
 
@@ -173,12 +171,12 @@ func (r *Router) HandlePM(peer, text string) {
 	if conn == nil {
 		if r.cfg.Accept == nil {
 			r.mu.Unlock()
-			r.logf("brmcp: no session %s and no Accept; dropping", key)
+			r.cfg.Log.Debugf("no session %s and no Accept; dropping", key)
 			return
 		}
 		if r.cfg.MaxSessionsPerPeer > 0 && r.peers[peer] >= r.cfg.MaxSessionsPerPeer {
 			r.mu.Unlock()
-			r.logf("brmcp: peer %s is at the session limit; dropping new session", peer)
+			r.cfg.Log.Warnf("peer %s is at the session limit; dropping new session", peer)
 			return
 		}
 		conn = r.newConnLocked(peer, part.SID)
@@ -198,7 +196,7 @@ func (r *Router) HandlePM(peer, text string) {
 	default:
 		// A stalled reader means the session is wedged; close it rather
 		// than buffer without bound.
-		r.logf("brmcp: inbox overflow on %s; closing session", key)
+		r.cfg.Log.Warnf("inbox overflow on %s; closing session", key)
 		conn.Close()
 	}
 }

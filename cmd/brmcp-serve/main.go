@@ -23,6 +23,7 @@ import (
 
 	"github.com/companyzero/bisonrelay/clientrpc/types"
 	"github.com/decred/dcrd/dcrutil/v4"
+	"github.com/decred/slog"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	kitconfig "github.com/vctt94/bisonbotkit/config"
 
@@ -104,13 +105,14 @@ func main() {
 		log.Fatal(err)
 	}
 
+	logBackend := slog.NewBackend(os.Stdout)
 	h, err := server.NewHarness(
 		&mcp.Implementation{Name: "brmcp-example", Version: "0.1.0"},
 		server.HarnessConfig{
 			DataDir:        *datadir,
 			AllowedPeers:   cfg.AllowedUIDs,
 			CallsPerMinute: cfg.CallsPerMinute,
-			Logf:           log.Printf,
+			Log:            logBackend.Logger("MCP"),
 		})
 	if err != nil {
 		log.Fatal(err)
@@ -160,7 +162,7 @@ func main() {
 					DataDir:     *datadir,
 					Router:      router,
 					Payer:       payer,
-					Logf:        log.Printf,
+					Log:         logBackend.Logger("DIR"),
 				})
 				if err != nil {
 					log.Printf("directory registrant disabled: %v", err)

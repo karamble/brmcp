@@ -223,7 +223,7 @@ func (b *Bridge) loadState() error {
 		}
 		c, p, err := parseIPEntry(e)
 		if err != nil {
-			b.logf("brmcp bridge: dropping invalid allowed_ips entry %q from %s", e, b.settingsPath())
+			b.log.Warnf("dropping invalid allowed_ips entry %q from %s", e, b.settingsPath())
 			continue
 		}
 		ipEntries = append(ipEntries, c)

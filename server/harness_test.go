@@ -35,7 +35,7 @@ func startHarnessFabric(t *testing.T, h *server.Harness) *mcp.ClientSession {
 
 	f := brmcptest.NewFabric()
 	t.Cleanup(f.Close)
-	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{Logf: t.Logf})
+	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{Log: brmcptest.Logger(t)})
 	serverRouter := h.Start(ctx, f.Sender(serverUID))
 	f.Attach(serverUID, serverRouter.HandlePM)
 
@@ -57,7 +57,7 @@ func TestPaidToolGate(t *testing.T) {
 		DataDir:        t.TempDir(),
 		AllowedPeers:   []string{clientUID},
 		CallsPerMinute: 100,
-		Logf:           t.Logf,
+		Log:            brmcptest.Logger(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestCallKeyIdempotency(t *testing.T) {
 		DataDir:        t.TempDir(),
 		AllowedPeers:   []string{clientUID},
 		CallsPerMinute: 100,
-		Logf:           t.Logf,
+		Log:            brmcptest.Logger(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -325,7 +325,7 @@ func TestLegacyWirePaidFlow(t *testing.T) {
 		DataDir:        t.TempDir(),
 		AllowedPeers:   []string{clientUID},
 		CallsPerMinute: 100,
-		Logf:           t.Logf,
+		Log:            brmcptest.Logger(t),
 	})
 	if err != nil {
 		t.Fatal(err)

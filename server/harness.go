@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/decred/slog"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/karamble/brmcp"
@@ -56,7 +57,7 @@ type HarnessConfig struct {
 	// TTL/ChunkSize/Assembler tune the transport (zero = defaults).
 	TTL       time.Duration
 	ChunkSize int
-	Logf      func(format string, args ...any)
+	Log       slog.Logger
 }
 
 // Harness carries an MCP tool server over Bison Relay PMs with default-deny
@@ -69,7 +70,7 @@ type Harness struct {
 	billing Billing
 	journal *callJournal
 	router  *brmcp.Router
-	logf    func(format string, args ...any)
+	log     slog.Logger
 
 	mu      sync.Mutex
 	allowed map[string]bool
@@ -88,8 +89,8 @@ func NewHarness(impl *mcp.Implementation, cfg HarnessConfig) (*Harness, error) {
 	if cfg.CallsPerMinute <= 0 {
 		cfg.CallsPerMinute = 30
 	}
-	if cfg.Logf == nil {
-		cfg.Logf = func(string, ...any) {}
+	if cfg.Log == nil {
+		cfg.Log = slog.Disabled
 	}
 	billing := cfg.Billing
 	if billing == nil {
@@ -106,7 +107,7 @@ func NewHarness(impl *mcp.Implementation, cfg HarnessConfig) (*Harness, error) {
 		cfg:     cfg,
 		impl:    impl,
 		billing: billing,
-		logf:    cfg.Logf,
+		log:     cfg.Log,
 		allowed: make(map[string]bool),
 		servers: make(map[string]*mcp.Server),
 		buckets: make(map[string]*bucket),
@@ -135,11 +136,11 @@ func (h *Harness) openJournal() error {
 	for key, e := range j.interrupted() {
 		if err := h.billing.Credit(e.Peer, e.Atoms); err != nil {
 			// Keep the entry: the refund runs again on the next start.
-			h.logf("brmcp: refund interrupted call to %s (%d atoms): %v", e.Peer, e.Atoms, err)
+			h.log.Errorf("refund interrupted call to %s (%d atoms): %v", e.Peer, e.Atoms, err)
 			continue
 		}
 		j.remove(key)
-		h.logf("brmcp: refunded interrupted call: %d atoms to %s", e.Atoms, e.Peer)
+		h.log.Infof("refunded interrupted call: %d atoms to %s", e.Atoms, e.Peer)
 	}
 	now := time.Now()
 	for key, rec := range j.completedRecords(now) {
@@ -172,11 +173,11 @@ func (h *Harness) Start(ctx context.Context, sender brmcp.PMSender) *brmcp.Route
 		TTL:       h.cfg.TTL,
 		ChunkSize: h.cfg.ChunkSize,
 		InboxSize: 0,
-		Logf:      h.logf,
+		Log:       h.log,
 		Accept: func(conn *brmcp.Conn) {
 			srv := h.serverFor(conn.Peer())
 			if _, err := srv.Connect(ctx, conn.AsTransport(), nil); err != nil {
-				h.logf("brmcp: session %s: %v", conn.SessionID(), err)
+				h.log.Warnf("session %s: %v", conn.SessionID(), err)
 				conn.Close()
 			}
 		},
@@ -355,7 +356,7 @@ func AddToolPriced[In any](h *Harness, tool *mcp.Tool, price PriceFunc[In],
 					// crash in between refunds it on the next start.
 					if rec != nil && h.journal != nil {
 						if jerr := h.journal.charged(key, peer, priceAtoms); jerr != nil {
-							h.logf("brmcp: journal charge %s: %v", key, jerr)
+							h.log.Errorf("journal charge %s: %v", key, jerr)
 						}
 					}
 					ctx = context.WithValue(ctx, chargedAtomsKey{}, priceAtoms)
@@ -365,7 +366,7 @@ func AddToolPriced[In any](h *Harness, tool *mcp.Tool, price PriceFunc[In],
 					// The caller should not pay for the operator's failure.
 					if priceAtoms > 0 {
 						if cerr := h.billing.Credit(peer, priceAtoms); cerr != nil {
-							h.logf("brmcp: refund %d to %s failed: %v", priceAtoms, peer, cerr)
+							h.log.Errorf("refund %d to %s failed: %v", priceAtoms, peer, cerr)
 						}
 					}
 					return finish(nil, nil, err)

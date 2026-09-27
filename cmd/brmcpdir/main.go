@@ -33,6 +33,7 @@ import (
 	"github.com/companyzero/bisonrelay/clientrpc/types"
 	"github.com/companyzero/bisonrelay/zkidentity"
 	"github.com/decred/dcrd/dcrutil/v4"
+	"github.com/decred/slog"
 	kit "github.com/vctt94/bisonbotkit"
 	kitconfig "github.com/vctt94/bisonbotkit/config"
 
@@ -291,7 +292,7 @@ func main() {
 		Payer:      be,
 		Introducer: be,
 		Suggester:  suggester,
-		Logf:       log.Printf,
+		Log:        slog.NewBackend(os.Stdout).Logger("DIR"),
 	})
 	if err != nil {
 		log.Fatal(err)

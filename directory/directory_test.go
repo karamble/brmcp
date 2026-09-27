@@ -193,7 +193,7 @@ func startDirectoryAt(t *testing.T, ctx context.Context, f *brmcptest.Fabric,
 		Suggester:  sugg,
 		SelfUID:    selfUID,
 		Clock:      clk,
-		Logf:       t.Logf,
+		Log:        brmcptest.Logger(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func newProviderHarness(t *testing.T, f *brmcptest.Fabric, ctx context.Context,
 			DataDir:        t.TempDir(),
 			AllowFunc:      func(string) bool { return true },
 			CallsPerMinute: 1000,
-			Logf:           t.Logf,
+			Log:            brmcptest.Logger(t),
 		})
 	if err != nil {
 		t.Fatal(err)
@@ -302,7 +302,7 @@ func (fx *fixture) dialFrom(r *brmcp.Router, name string) *mcp.ClientSession {
 // their harness router instead: one uid, one router on the fabric.
 func (fx *fixture) dial(uid string) *mcp.ClientSession {
 	fx.t.Helper()
-	r := fx.fab.NewRouter(uid, brmcp.RouterConfig{Logf: fx.t.Logf})
+	r := fx.fab.NewRouter(uid, brmcp.RouterConfig{Log: brmcptest.Logger(fx.t)})
 	return fx.dialFrom(r, uid[:4])
 }
 

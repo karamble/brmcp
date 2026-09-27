@@ -31,7 +31,7 @@ func (b *Bridge) Handler() http.Handler {
 		if err != nil {
 			// Unreachable after the middleware preflight; kept as a
 			// backstop so the handshake stays valid.
-			b.logf("brmcp bridge: proxy for %s: %v", uid, err)
+			b.log.Warnf("proxy for %s: %v", uid, err)
 			return mcp.NewServer(&mcp.Implementation{Name: b.cfg.Name, Version: "0"}, nil)
 		}
 		return srv
@@ -80,7 +80,7 @@ func (b *Bridge) authMiddleware(next http.Handler) http.Handler {
 			b.mu.Lock()
 			b.lastDenied = &DeniedAttempt{IP: deniedIP(r.RemoteAddr), At: b.clk.Now()}
 			b.mu.Unlock()
-			b.logf("brmcp bridge: denied request from %s: not in allowed_ips", r.RemoteAddr)
+			b.log.Warnf("denied request from %s: not in allowed_ips", r.RemoteAddr)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -96,7 +96,7 @@ func (b *Bridge) authMiddleware(next http.Handler) http.Handler {
 		// bot into a clean 503 instead of a hollow MCP handshake the agent
 		// would cache as an empty tool list.
 		if _, err := b.proxyServerFor(uid); err != nil {
-			b.logf("brmcp bridge: proxy for %s: %v", uid, err)
+			b.log.Warnf("proxy for %s: %v", uid, err)
 			http.Error(w, "bot unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -126,10 +126,10 @@ func (b *Bridge) startListenerLocked() error {
 	}
 	b.httpSrv = srv
 	b.lnAddr = ln.Addr()
-	b.logf("brmcp bridge: listener on http://%s (streamable HTTP, bearer auth)", ln.Addr())
+	b.log.Infof("listener on http://%s (streamable HTTP, bearer auth)", ln.Addr())
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			b.logf("brmcp bridge: listener: %v", err)
+			b.log.Errorf("listener: %v", err)
 		}
 	}()
 	return nil
@@ -145,5 +145,5 @@ func (b *Bridge) stopListenerLocked() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
-	b.logf("brmcp bridge: listener stopped")
+	b.log.Infof("listener stopped")
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/karamble/brmcp"
+	"github.com/karamble/brmcp/brmcptest"
 	"github.com/karamble/brmcp/directory"
 	"github.com/karamble/brmcp/server"
 )
@@ -67,7 +68,7 @@ func TestFederationE2E(t *testing.T) {
 	fx.payer.setRail(dirBUID, svcB.Harness())
 
 	// The provider gets listed on B first.
-	adminRouter := fx.fab.NewRouter(adminUID, brmcp.RouterConfig{Logf: t.Logf})
+	adminRouter := fx.fab.NewRouter(adminUID, brmcp.RouterConfig{Log: brmcptest.Logger(t)})
 	adminB := fx.dialTo(adminRouter, dirBUID, "adminB")
 	provB := fx.dialTo(fx.provRouter, dirBUID, "provB")
 	listOnDirectory(t, fx, svcB, provB, adminB, providerUID)
@@ -190,7 +191,7 @@ func TestFederationIntroducerFallback(t *testing.T) {
 	fx.payer.setRail(dirBUID, svcB.Harness())
 	fx.payer.setRail(lonerUID, lonerH)
 
-	adminRouter := fx.fab.NewRouter(adminUID, brmcp.RouterConfig{Logf: t.Logf})
+	adminRouter := fx.fab.NewRouter(adminUID, brmcp.RouterConfig{Log: brmcptest.Logger(t)})
 	adminB := fx.dialTo(adminRouter, dirBUID, "adminB")
 	provLB := fx.dialTo(lonerRouter, dirBUID, "lonerB")
 	listOnDirectory(t, fx, svcB, provLB, adminB, lonerUID)
@@ -249,7 +250,7 @@ func TestFederationIntroducerFallback(t *testing.T) {
 		}),
 		Clock:  fx.clk,
 		Notify: notify.cb,
-		Logf:   t.Logf,
+		Log:    brmcptest.Logger(t),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -73,7 +73,7 @@ func (s *Service) runPeerVerification(ctx context.Context, peerUID string) (int,
 		return nil
 	})
 	if err != nil {
-		s.logf("brmcpdir: stamp peer %s: %v", peerUID[:8], err)
+		s.log.Errorf("stamp peer %s: %v", peerUID[:8], err)
 	}
 	return newLeads, nil
 }
@@ -150,7 +150,7 @@ func (s *Service) resumeLeadAfterKX(uid string) {
 		ctx := s.baseCtx()
 		if err := s.sendListingInvite(ctx, uid); err != nil {
 			s.setLeadState(uid, LeadPursuing, "invite after KX failed: "+err.Error())
-			s.logf("brmcpdir: lead %s invite after KX: %v", uid[:8], err)
+			s.log.Errorf("lead %s invite after KX: %v", uid[:8], err)
 			return
 		}
 		s.setLeadState(uid, LeadInvited, "")
@@ -174,7 +174,7 @@ func (s *Service) setLeadState(uid, state, note string) Lead {
 		return nil
 	})
 	if err != nil && !errors.Is(err, errNoChange) {
-		s.logf("brmcpdir: lead %s state: %v", uid[:8], err)
+		s.log.Errorf("lead %s state: %v", uid[:8], err)
 	}
 	return out
 }

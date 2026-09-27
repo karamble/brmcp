@@ -28,7 +28,7 @@ func TestToolVisibility(t *testing.T) {
 		ToolVisible: func(peer, tool string) bool {
 			return tool != "admin_only" || peer == adminUID
 		},
-		Logf: t.Logf,
+		Log: brmcptest.Logger(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestToolVisibility(t *testing.T) {
 
 	dial := func(uid string) *mcp.ClientSession {
 		t.Helper()
-		r := f.NewRouter(uid, brmcp.RouterConfig{Logf: t.Logf})
+		r := f.NewRouter(uid, brmcp.RouterConfig{Log: brmcptest.Logger(t)})
 		conn, err := r.Dial(botUID)
 		if err != nil {
 			t.Fatal(err)

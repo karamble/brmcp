@@ -137,7 +137,7 @@ func (b *Bridge) settle(ctx context.Context, bot, tool string, pr *brmcp.Payment
 	b.mu.Lock()
 	b.markSpendLocked(seq, spendPaid, "")
 	b.mu.Unlock()
-	b.logf("brmcp bridge: paid %d atoms for %s/%s", atoms, bot[:8], tool)
+	b.log.Infof("paid %d atoms for %s/%s", atoms, bot[:8], tool)
 	return nil
 }
 
@@ -169,7 +169,7 @@ func (b *Bridge) awaitApproval(ctx context.Context, bot, tool string, atoms int6
 		b.mu.Unlock()
 	}()
 
-	b.logf("brmcp bridge: payment awaiting approval: %s atoms=%d bot=%s tool=%s",
+	b.log.Infof("payment awaiting approval: %s atoms=%d bot=%s tool=%s",
 		p.ID, atoms, bot[:8], tool)
 	select {
 	case ok := <-p.decision:
@@ -234,7 +234,7 @@ func (b *Bridge) recordSpendLocked(bot, tool, rail string, atoms int64) int64 {
 		seq:    seq,
 	})
 	if err := b.persistSpendLocked(); err != nil {
-		b.logf("brmcp bridge: persist spend log: %v", err)
+		b.log.Errorf("persist spend log: %v", err)
 	}
 	return seq
 }
@@ -250,7 +250,7 @@ func (b *Bridge) refuse(bot, tool string, atoms int64, reason string) {
 		Status: spendRefused, Err: reason, seq: b.spendSeq,
 	})
 	if err := b.persistSpendLocked(); err != nil {
-		b.logf("brmcp bridge: persist spend log: %v", err)
+		b.log.Errorf("persist spend log: %v", err)
 	}
 	b.mu.Unlock()
 }
@@ -263,7 +263,7 @@ func (b *Bridge) markSpendLocked(seq int64, status, errStr string) {
 			b.spend[i].Status = status
 			b.spend[i].Err = errStr
 			if err := b.persistSpendLocked(); err != nil {
-				b.logf("brmcp bridge: persist spend log: %v", err)
+				b.log.Errorf("persist spend log: %v", err)
 			}
 			return
 		}
@@ -292,9 +292,9 @@ func (b *Bridge) ResolveSpend(payeeUID string, atoms int64, payErr error) bool {
 			e.Err = ""
 		}
 		if err := b.persistSpendLocked(); err != nil {
-			b.logf("brmcp bridge: persist spend log: %v", err)
+			b.log.Errorf("persist spend log: %v", err)
 		}
-		b.logf("brmcp bridge: late payment outcome for %s/%s: %d atoms %s",
+		b.log.Infof("late payment outcome for %s/%s: %d atoms %s",
 			e.Bot[:8], e.Tool, atoms, e.Status)
 		return true
 	}

@@ -176,7 +176,7 @@ func TestOwnedListenerLifecycle(t *testing.T) {
 		Sender:     fx.sender,
 		Payer:      fx.payer,
 		ListenAddr: "127.0.0.1:0",
-		Logf:       t.Logf,
+		Log:        brmcptest.Logger(t),
 		Clock:      fx.clk,
 	})
 	if err != nil {

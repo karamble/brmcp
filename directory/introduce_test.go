@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/karamble/brmcp"
+	"github.com/karamble/brmcp/brmcptest"
 	"github.com/karamble/brmcp/directory"
 	"github.com/karamble/brmcp/server"
 )
@@ -102,7 +103,7 @@ func TestIntroduceUnsupported(t *testing.T) {
 		nil)
 	t.Cleanup(func() { svc2.Close() })
 
-	r := fx.fab.NewRouter(stingyUID, brmcp.RouterConfig{Logf: t.Logf})
+	r := fx.fab.NewRouter(stingyUID, brmcp.RouterConfig{Log: brmcptest.Logger(t)})
 	c2 := fx.dialTo(r, dirBUID, "c2")
 	err := fx.call(c2, "introduce", map[string]any{"uid": providerUID}, nil)
 	if err == nil || !strings.Contains(err.Error(), "does not support introductions") {

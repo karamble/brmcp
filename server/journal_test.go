@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/karamble/brmcp/brmcptest"
 )
 
 // TestInterruptedChargeRefundedOnRestart simulates a crash between the
@@ -23,7 +25,7 @@ func TestInterruptedChargeRefundedOnRestart(t *testing.T) {
 	impl := &mcp.Implementation{Name: "t", Version: "0"}
 	peer := "aa11"
 
-	h1, err := NewHarness(impl, HarnessConfig{DataDir: dir, Logf: t.Logf})
+	h1, err := NewHarness(impl, HarnessConfig{DataDir: dir, Log: brmcptest.Logger(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +41,7 @@ func TestInterruptedChargeRefundedOnRestart(t *testing.T) {
 	}
 	// Crash here: h1 is abandoned without completing the call.
 
-	h2, err := NewHarness(impl, HarnessConfig{DataDir: dir, Logf: t.Logf})
+	h2, err := NewHarness(impl, HarnessConfig{DataDir: dir, Log: brmcptest.Logger(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +52,7 @@ func TestInterruptedChargeRefundedOnRestart(t *testing.T) {
 		t.Fatalf("interrupted entries survived reconcile: %d", got)
 	}
 	// The refund happens exactly once: a third start changes nothing.
-	h3, err := NewHarness(impl, HarnessConfig{DataDir: dir, Logf: t.Logf})
+	h3, err := NewHarness(impl, HarnessConfig{DataDir: dir, Log: brmcptest.Logger(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

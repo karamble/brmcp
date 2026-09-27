@@ -12,7 +12,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 
+	"github.com/decred/slog"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/karamble/brmcp"
@@ -24,6 +26,20 @@ type SenderFunc func(ctx context.Context, peer, text string) error
 // SendPM implements brmcp.PMSender.
 func (f SenderFunc) SendPM(ctx context.Context, peer, text string) error {
 	return f(ctx, peer, text)
+}
+
+type testWriter struct{ tb testing.TB }
+
+func (w testWriter) Write(p []byte) (int, error) {
+	w.tb.Log(strings.TrimSuffix(string(p), "\n"))
+	return len(p), nil
+}
+
+// Logger returns a logger that writes every level to tb's log.
+func Logger(tb testing.TB) slog.Logger {
+	l := slog.NewBackend(testWriter{tb}).Logger("TEST")
+	l.SetLevel(slog.LevelTrace)
+	return l
 }
 
 // UID returns a deterministic 64-hex Bison Relay uid built from the low

@@ -187,7 +187,7 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 		DataDir:        t.TempDir(),
 		AllowedPeers:   []string{agentUID},
 		CallsPerMinute: 10_000,
-		Logf:           t.Logf,
+		Log:            brmcptest.Logger(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +218,7 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 		Sender:  fx.sender,
 		Payer:   fx.payer,
 		Name:    "brclientd",
-		Logf:    t.Logf,
+		Log:     brmcptest.Logger(t),
 		Clock:   fx.clk,
 	})
 	if err != nil {
@@ -1206,7 +1206,7 @@ func TestLegacyBotFallback(t *testing.T) {
 			return nil
 		}),
 		Name:  "brclientd",
-		Logf:  t.Logf,
+		Log:   brmcptest.Logger(t),
 		Clock: newTestClock(true),
 	})
 	if err != nil {

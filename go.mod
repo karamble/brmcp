@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	github.com/companyzero/bisonrelay v0.2.5-0.20251216165537-8b1a3b4bd3d6
 	github.com/decred/dcrd/dcrutil/v4 v4.0.3
+	github.com/decred/slog v1.2.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/vctt94/bisonbotkit v0.0.2-0.20260204145852-60ab34d1acd1
 )
@@ -64,7 +65,6 @@ require (
 	github.com/decred/dcrtest/dcrdtest v1.0.1-0.20240514160637-ade8c37ad1db // indirect
 	github.com/decred/go-socks v1.1.0 // indirect
 	github.com/decred/lightning-onion/v4 v4.0.1 // indirect
-	github.com/decred/slog v1.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fergusstrange/embedded-postgres v1.25.0 // indirect
 	github.com/gen2brain/malgo v0.11.24 // indirect

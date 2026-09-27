@@ -8,13 +8,15 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/karamble/brmcp/brmcptest"
 )
 
 func TestRateLimit(t *testing.T) {
 	h, err := NewHarness(&mcp.Implementation{Name: "t", Version: "0"}, HarnessConfig{
 		DataDir:        t.TempDir(),
 		CallsPerMinute: 2,
-		Logf:           t.Logf,
+		Log:            brmcptest.Logger(t),
 	})
 	if err != nil {
 		t.Fatal(err)

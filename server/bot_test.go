@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/karamble/brmcp"
+	"github.com/karamble/brmcp/brmcptest"
 	"github.com/karamble/brmcp/wire"
 )
 
@@ -16,7 +17,7 @@ import (
 // non-envelope PMs reach the host's OnPM hook, and envelopes still reach
 // the router when no hook is set.
 func TestDispatchPM(t *testing.T) {
-	router := brmcp.NewRouter(brmcp.RouterConfig{Logf: t.Logf})
+	router := brmcp.NewRouter(brmcp.RouterConfig{Log: brmcptest.Logger(t)})
 
 	var gotUID, gotText string
 	hooks := RunBotHooks{OnPM: func(uid, text string) {

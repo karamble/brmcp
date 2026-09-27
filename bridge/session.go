@@ -83,7 +83,7 @@ func (b *Bridge) proxyServerFor(uid string) (*mcp.Server, error) {
 		srv.AddTool(&tool, b.passthrough(link, tool.Name))
 	}
 	link.proxy = srv
-	b.logf("brmcp bridge: proxy for bot %s serving %d tools", uid[:8], len(tl.Tools))
+	b.log.Infof("proxy for bot %s serving %d tools", uid[:8], len(tl.Tools))
 	return srv, nil
 }
 
@@ -160,7 +160,7 @@ func (b *Bridge) passthrough(link *botLink, tool string) mcp.ToolHandler {
 				return res, nil
 			}
 			if err := b.settle(ctx, link.uid, tool, pr); err != nil {
-				b.logf("brmcp bridge: payment for %s/%s refused: %v", link.uid[:8], tool, err)
+				b.log.Warnf("payment for %s/%s refused: %v", link.uid[:8], tool, err)
 				res.Content = append(res.Content, &mcp.TextContent{
 					Text: b.cfg.Name + ": payment not made: " + err.Error(),
 				})

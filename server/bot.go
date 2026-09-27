@@ -149,19 +149,19 @@ func RunBotHooked(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig, hoo
 				// needs its acknowledgement.
 				if h.Allowed(uid) && !already {
 					if err := h.Billing().Credit(uid, atoms); err != nil {
-						h.logf("brmcp: credit tip from %s: %v", uid[:8], err)
+						h.log.Errorf("credit tip from %s: %v", uid[:8], err)
 						continue
 					}
-					h.logf("brmcp: tip from %s credited %d atoms", uid[:8], atoms)
+					h.log.Infof("tip from %s credited %d atoms", uid[:8], atoms)
 				}
 				if tips != nil && !already {
 					if err := tips.Record(tip.SequenceId); err != nil {
-						h.logf("brmcp: record tip %d: %v", tip.SequenceId, err)
+						h.log.Errorf("record tip %d: %v", tip.SequenceId, err)
 					}
 				}
 				if bot := backend.current(); bot != nil {
 					if err := bot.AckTipReceived(ctx, tip.SequenceId); err != nil {
-						h.logf("brmcp: ack tip %d: %v", tip.SequenceId, err)
+						h.log.Errorf("ack tip %d: %v", tip.SequenceId, err)
 					}
 				}
 				if hooks.OnTipReceived != nil && !already {
@@ -185,7 +185,7 @@ func RunBotHooked(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig, hoo
 				}
 				if bot := backend.current(); bot != nil {
 					if err := bot.AckTipProgress(ctx, ev.SequenceId); err != nil {
-						h.logf("brmcp: ack tip progress %d: %v", ev.SequenceId, err)
+						h.log.Errorf("ack tip progress %d: %v", ev.SequenceId, err)
 					}
 				}
 			}
@@ -195,7 +195,7 @@ func RunBotHooked(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig, hoo
 	for {
 		bot, err := kit.NewBot(cfg)
 		if err != nil {
-			h.logf("brmcp: bot init: %v (retrying)", err)
+			h.log.Warnf("bot init: %v (retrying)", err)
 		} else {
 			backend.set(bot)
 			if hooks.OnBot != nil {
@@ -210,7 +210,7 @@ func RunBotHooked(ctx context.Context, h *Harness, cfg *kitconfig.BotConfig, hoo
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			h.logf("brmcp: bot run ended: %v (reconnecting)", err)
+			h.log.Warnf("bot run ended: %v (reconnecting)", err)
 		}
 		select {
 		case <-time.After(3 * time.Second):

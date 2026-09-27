@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/karamble/brmcp/bridge"
+	"github.com/karamble/brmcp/brmcptest"
 )
 
 // recordGate probes the bearer and IP gates without touching a bot: it posts
@@ -119,7 +120,7 @@ func TestAllowedIPsRoundTrip(t *testing.T) {
 
 	b, err := bridge.New(bridge.Config{
 		DataDir: fx.dataDir, Sender: fx.sender, Payer: fx.payer,
-		Logf: t.Logf, Clock: fx.clk,
+		Log: brmcptest.Logger(t), Clock: fx.clk,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +157,7 @@ func TestLegacySettingsUnrestricted(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := bridge.New(bridge.Config{
-		DataDir: dataDir, Sender: fx.sender, Payer: fx.payer, Logf: t.Logf, Clock: fx.clk,
+		DataDir: dataDir, Sender: fx.sender, Payer: fx.payer, Log: brmcptest.Logger(t), Clock: fx.clk,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -280,7 +281,7 @@ func TestAllowedIPsHotApplyOwnedListener(t *testing.T) {
 		Sender:     fx.sender,
 		Payer:      fx.payer,
 		ListenAddr: "127.0.0.1:0",
-		Logf:       t.Logf,
+		Log:        brmcptest.Logger(t),
 		Clock:      fx.clk,
 	})
 	if err != nil {

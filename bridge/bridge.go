@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/decred/slog"
+
 	"github.com/karamble/brmcp"
 	"github.com/karamble/brmcp/wire"
 )
@@ -68,8 +70,8 @@ type Config struct {
 	// Name brands the MCP client identity and the refusal-note prefix.
 	// Empty selects "brmcp-bridge".
 	Name string
-	// Logf, when non-nil, receives diagnostic lines.
-	Logf func(format string, args ...any)
+	// Log receives diagnostic lines; nil discards them.
+	Log slog.Logger
 	// Clock overrides the system clock (tests).
 	Clock Clock
 	// TTL, ChunkSize, Assembler tune the underlying router (zero selects
@@ -86,7 +88,7 @@ type Config struct {
 type Bridge struct {
 	cfg    Config
 	clk    Clock
-	logf   func(format string, args ...any)
+	log    slog.Logger
 	router *brmcp.Router
 
 	mu         sync.Mutex
@@ -123,7 +125,7 @@ func New(cfg Config) (*Bridge, error) {
 	b := &Bridge{
 		cfg:     cfg,
 		clk:     cfg.Clock,
-		logf:    cfg.Logf,
+		log:     cfg.Log,
 		ctx:     context.Background(),
 		bots:    make(map[string]*botLink),
 		pending: make(map[string]*pendingPayment),
@@ -131,8 +133,8 @@ func New(cfg Config) (*Bridge, error) {
 	if b.clk == nil {
 		b.clk = systemClock{}
 	}
-	if b.logf == nil {
-		b.logf = func(string, ...any) {}
+	if b.log == nil {
+		b.log = slog.Disabled
 	}
 	if err := b.loadState(); err != nil {
 		return nil, err
@@ -143,7 +145,7 @@ func New(cfg Config) (*Bridge, error) {
 		TTL:       cfg.TTL,
 		ChunkSize: cfg.ChunkSize,
 		Assembler: cfg.Assembler,
-		Logf:      b.logf,
+		Log:       b.log,
 	})
 	return b, nil
 }

@@ -53,10 +53,10 @@ func TestMCPSessionOverPM(t *testing.T) {
 	// ChunkSize 512 forces the big tool's result to cross as many parts.
 	f := brmcptest.NewFabric()
 	t.Cleanup(f.Close)
-	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{ChunkSize: 512, Logf: t.Logf})
+	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{ChunkSize: 512, Log: brmcptest.Logger(t)})
 	f.NewRouter(serverUID, brmcp.RouterConfig{
 		ChunkSize: 512,
-		Logf:      t.Logf,
+		Log:       brmcptest.Logger(t),
 		Accept: func(conn *brmcp.Conn) {
 			if _, err := server.Connect(ctx, conn.AsTransport(), nil); err != nil {
 				t.Errorf("server connect: %v", err)
@@ -134,9 +134,9 @@ func TestDisallowedPeerIgnored(t *testing.T) {
 	accepted := make(chan *brmcp.Conn, 1)
 	f := brmcptest.NewFabric()
 	t.Cleanup(f.Close)
-	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{Logf: t.Logf})
+	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{Log: brmcptest.Logger(t)})
 	f.NewRouter(serverUID, brmcp.RouterConfig{
-		Logf:   t.Logf,
+		Log:    brmcptest.Logger(t),
 		Accept: func(conn *brmcp.Conn) { accepted <- conn },
 		Allow:  func(peer string) bool { return peer != clientUID },
 	})
@@ -162,7 +162,7 @@ func TestHumanChatIgnored(t *testing.T) {
 	f := brmcptest.NewFabric()
 	t.Cleanup(f.Close)
 	srv := f.NewRouter(serverUID, brmcp.RouterConfig{
-		Logf: t.Logf,
+		Log: brmcptest.Logger(t),
 		Accept: func(conn *brmcp.Conn) {
 			t.Error("plain chat created a session")
 		},
@@ -181,9 +181,9 @@ func TestIdleSessionExpiry(t *testing.T) {
 	var accepts atomic.Int64
 	f := brmcptest.NewFabric()
 	t.Cleanup(f.Close)
-	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{Logf: t.Logf})
+	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{Log: brmcptest.Logger(t)})
 	f.NewRouter(serverUID, brmcp.RouterConfig{
-		Logf:        t.Logf,
+		Log:         brmcptest.Logger(t),
 		IdleTimeout: 200 * time.Millisecond,
 		Accept: func(conn *brmcp.Conn) {
 			accepts.Add(1)
@@ -233,9 +233,9 @@ func TestSessionCapPerPeer(t *testing.T) {
 	var accepts atomic.Int64
 	f := brmcptest.NewFabric()
 	t.Cleanup(f.Close)
-	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{Logf: t.Logf})
+	clientRouter := f.NewRouter(clientUID, brmcp.RouterConfig{Log: brmcptest.Logger(t)})
 	f.NewRouter(serverUID, brmcp.RouterConfig{
-		Logf:               t.Logf,
+		Log:                brmcptest.Logger(t),
 		MaxSessionsPerPeer: 2,
 		Accept: func(conn *brmcp.Conn) {
 			accepts.Add(1)

@@ -29,7 +29,7 @@ func TestPaidCallReplayAcrossRestart(t *testing.T) {
 			DataDir:        dir,
 			AllowedPeers:   []string{clientUID},
 			CallsPerMinute: 100,
-			Logf:           t.Logf,
+			Log:            brmcptest.Logger(t),
 		})
 		if err != nil {
 			t.Fatal(err)

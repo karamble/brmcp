@@ -162,7 +162,7 @@ func (s *Service) pokeFunding(uid string) {
 		return nil
 	})
 	if err != nil && !errors.Is(err, errNoChange) {
-		s.logf("brmcpdir: funding check %s: %v", uid[:8], err)
+		s.log.Errorf("funding check %s: %v", uid[:8], err)
 	}
 	if start {
 		s.spawnPipeline(uid)
@@ -207,7 +207,7 @@ func (s *Service) runPipeline(uid string) {
 			return nil
 		}); err != nil {
 			if !errors.Is(err, errNoChange) {
-				s.logf("brmcpdir: persist crawl %s: %v", uid[:8], err)
+				s.log.Errorf("persist crawl %s: %v", uid[:8], err)
 			}
 			return
 		}
@@ -242,14 +242,14 @@ func (s *Service) runPipeline(uid string) {
 		return nil
 	})
 	if err != nil && !errors.Is(err, errNoChange) {
-		s.logf("brmcpdir: persist test %s: %v", uid[:8], err)
+		s.log.Errorf("persist test %s: %v", uid[:8], err)
 		return
 	}
 	if promote {
 		if err := s.promote(uid); err != nil {
-			s.logf("brmcpdir: renewal promote %s: %v", uid[:8], err)
+			s.log.Errorf("renewal promote %s: %v", uid[:8], err)
 		} else {
-			s.logf("brmcpdir: renewed %s", uid[:8])
+			s.log.Infof("renewed %s", uid[:8])
 		}
 	}
 }
@@ -268,9 +268,9 @@ func (s *Service) park(uid, msg string) {
 		return nil
 	})
 	if err != nil && !errors.Is(err, errNoChange) {
-		s.logf("brmcpdir: park %s: %v", uid[:8], err)
+		s.log.Errorf("park %s: %v", uid[:8], err)
 	}
-	s.logf("brmcpdir: %s parked for review: %s", uid[:8], msg)
+	s.log.Infof("%s parked for review: %s", uid[:8], msg)
 }
 
 // promote publishes a verified registration as the live listing. Renewals
@@ -342,7 +342,7 @@ func (s *Service) convertLead(uid string) {
 		return nil
 	})
 	if err != nil && !errors.Is(err, errNoChange) {
-		s.logf("brmcpdir: convert lead %s: %v", uid[:8], err)
+		s.log.Errorf("convert lead %s: %v", uid[:8], err)
 	}
 }
 
@@ -376,7 +376,7 @@ func (s *Service) expire(uid string, now int64) {
 	}
 	if e.Reg == nil {
 		if err := s.index.delete(uid); err != nil {
-			s.logf("brmcpdir: expire %s: %v", uid[:8], err)
+			s.log.Errorf("expire %s: %v", uid[:8], err)
 			return
 		}
 	} else {
@@ -388,11 +388,11 @@ func (s *Service) expire(uid string, now int64) {
 			return nil
 		})
 		if err != nil && !errors.Is(err, errNoChange) {
-			s.logf("brmcpdir: expire %s: %v", uid[:8], err)
+			s.log.Errorf("expire %s: %v", uid[:8], err)
 			return
 		}
 	}
-	s.logf("brmcpdir: listing %s expired", uid[:8])
+	s.log.Infof("listing %s expired", uid[:8])
 }
 
 // recrawlListing refreshes a live catalog for free; execution verification
@@ -400,7 +400,7 @@ func (s *Service) expire(uid string, now int64) {
 func (s *Service) recrawlListing(ctx context.Context, uid string) {
 	catalog, err := s.crawl(ctx, uid)
 	if err != nil {
-		s.logf("brmcpdir: recrawl %s: %v", uid[:8], err)
+		s.log.Errorf("recrawl %s: %v", uid[:8], err)
 		return
 	}
 	now := s.clk.Now().Unix()
@@ -415,6 +415,6 @@ func (s *Service) recrawlListing(ctx context.Context, uid string) {
 		return nil
 	})
 	if err != nil && !errors.Is(err, errNoChange) {
-		s.logf("brmcpdir: recrawl persist %s: %v", uid[:8], err)
+		s.log.Errorf("recrawl persist %s: %v", uid[:8], err)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/decred/slog"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/karamble/brmcp"
@@ -53,11 +54,11 @@ type RegistrantConfig struct {
 	// Clock overrides the system clock (tests).
 	Clock Clock
 	// Notify, when non-nil, receives every registration outcome or
-	// refusal; nil falls back to Logf.
+	// refusal; nil falls back to Log.
 	Notify func(directoryUID string, st StatusOut, err error)
 	// Name brands the MCP client identity. Empty selects "registrant".
 	Name string
-	Logf func(format string, args ...any)
+	Log  slog.Logger
 }
 
 // Registrant is the provider-side directory client: it registers the host
@@ -66,7 +67,7 @@ type RegistrantConfig struct {
 type Registrant struct {
 	cfg  RegistrantConfig
 	clk  Clock
-	logf func(format string, args ...any)
+	log  slog.Logger
 	fund *fundHistory
 
 	mu  sync.Mutex
@@ -92,12 +93,12 @@ func NewRegistrant(cfg RegistrantConfig) (*Registrant, error) {
 	if cfg.Name == "" {
 		cfg.Name = "registrant"
 	}
-	r := &Registrant{cfg: cfg, clk: cfg.Clock, logf: cfg.Logf, ctx: context.Background()}
+	r := &Registrant{cfg: cfg, clk: cfg.Clock, log: cfg.Log, ctx: context.Background()}
 	if r.clk == nil {
 		r.clk = systemClock{}
 	}
-	if r.logf == nil {
-		r.logf = func(string, ...any) {}
+	if r.log == nil {
+		r.log = slog.Disabled
 	}
 	var err error
 	if r.fund, err = openFundHistory(filepath.Join(cfg.DataDir, "regfund.json")); err != nil {
@@ -125,7 +126,7 @@ func (r *Registrant) notify(directoryUID string, st StatusOut, err error) {
 		r.cfg.Notify(directoryUID, st, err)
 		return
 	}
-	r.logf("registrant: directory %s: state=%s err=%v", directoryUID[:8], st.State, err)
+	r.log.Infof("directory %s: state=%s err=%v", directoryUID[:8], st.State, err)
 }
 
 // RegisterTools contributes the listing_invite tool to the host's harness
@@ -144,7 +145,7 @@ func (r *Registrant) RegisterTools(h *server.Harness) {
 		}
 		go func() {
 			if err := r.Register(r.baseCtx(), peer); err != nil {
-				r.logf("registrant: invited registration at %s: %v", peer[:8], err)
+				r.log.Warnf("invited registration at %s: %v", peer[:8], err)
 			}
 		}()
 		return InviteOut{Accepted: true}, nil

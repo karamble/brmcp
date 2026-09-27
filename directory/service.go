@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/decred/slog"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/karamble/brmcp"
@@ -133,8 +134,8 @@ type Config struct {
 	SelfUID string
 	// Clock overrides the system clock (tests).
 	Clock Clock
-	// Logf, when non-nil, receives diagnostic lines.
-	Logf func(format string, args ...any)
+	// Log receives diagnostic lines; nil discards them.
+	Log slog.Logger
 	// TTL and ChunkSize tune the underlying router (zero = defaults).
 	TTL       time.Duration
 	ChunkSize int
@@ -146,7 +147,7 @@ type Service struct {
 	cfg     Config
 	policy  Policy
 	clk     Clock
-	logf    func(format string, args ...any)
+	log     slog.Logger
 	harness *server.Harness
 	signer  *snapshotSigner
 	index   *jsonStore[Entry]
@@ -180,7 +181,7 @@ func New(cfg Config) (*Service, error) {
 		cfg:        cfg,
 		policy:     cfg.Policy.withDefaults(),
 		clk:        cfg.Clock,
-		logf:       cfg.Logf,
+		log:        cfg.Log,
 		ctx:        context.Background(),
 		cancel:     func() {},
 		selfUID:    cfg.SelfUID,
@@ -191,8 +192,8 @@ func New(cfg Config) (*Service, error) {
 	if s.clk == nil {
 		s.clk = systemClock{}
 	}
-	if s.logf == nil {
-		s.logf = func(string, ...any) {}
+	if s.log == nil {
+		s.log = slog.Disabled
 	}
 	for _, uid := range s.policy.AdminUIDs {
 		s.admins[uid] = true
@@ -224,7 +225,7 @@ func New(cfg Config) (*Service, error) {
 			ToolVisible:    s.toolVisible,
 			TTL:            cfg.TTL,
 			ChunkSize:      cfg.ChunkSize,
-			Logf:           s.logf,
+			Log:            s.log,
 		})
 	if err != nil {
 		return nil, err
@@ -291,7 +292,7 @@ func (s *Service) CreditTip(fromUID string, atoms int64) {
 		return
 	}
 	if err := s.harness.Billing().Credit(fromUID, atoms); err != nil {
-		s.logf("brmcpdir: credit %d to %s: %v", atoms, fromUID, err)
+		s.log.Errorf("credit %d to %s: %v", atoms, fromUID, err)
 		return
 	}
 	s.pokeFunding(fromUID)

@@ -234,7 +234,7 @@ func (s *Service) paidCall(ctx context.Context, uid, tool string, args json.RawM
 			TS: s.clk.Now().Unix(), UID: uid, Tool: tool, Atoms: amount,
 		})
 		if err != nil {
-			s.logf("brmcpdir: spend journal: %v", err)
+			s.log.Errorf("spend journal: %v", err)
 		}
 		payCtx, payCancel := context.WithTimeout(ctx, payWait)
 		payErr := s.cfg.Payer.Pay(payCtx, uid, amount)
@@ -246,7 +246,7 @@ func (s *Service) paidCall(ctx context.Context, uid, tool string, args json.RawM
 				s.spend.remove(token)
 				if debit != nil {
 					if cerr := s.harness.Billing().Credit(uid, amount); cerr != nil {
-						s.logf("brmcpdir: escrow refund %d to %s: %v", amount, uid[:8], cerr)
+						s.log.Errorf("escrow refund %d to %s: %v", amount, uid[:8], cerr)
 					}
 				}
 			}

@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/karamble/brmcp"
+	"github.com/karamble/brmcp/brmcptest"
 	"github.com/karamble/brmcp/directory"
 )
 
@@ -70,7 +71,7 @@ func (fx *fixture) newRegistrant(t *testing.T, fund directory.AutoFund, notify *
 		}),
 		Clock:  fx.clk,
 		Notify: notify.cb,
-		Logf:   t.Logf,
+		Log:    brmcptest.Logger(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +219,7 @@ func TestRegistrantFundingCaps(t *testing.T) {
 // dialProvider opens a session to the provider harness from a fresh uid.
 func (fx *fixture) dialProvider(uid, name string) *mcp.ClientSession {
 	fx.t.Helper()
-	r := fx.fab.NewRouter(uid, brmcp.RouterConfig{Logf: fx.t.Logf})
+	r := fx.fab.NewRouter(uid, brmcp.RouterConfig{Log: brmcptest.Logger(fx.t)})
 	return fx.dialTo(r, providerUID, name)
 }
 
