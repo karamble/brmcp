@@ -5,6 +5,7 @@
 package directory
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -59,7 +60,12 @@ func TestSnapshotSignVerify(t *testing.T) {
 
 	// Tampered signature.
 	bad = ss
-	bad.Sig = ss.Sig[:len(ss.Sig)-2] + "00"
+	sig, err := hex.DecodeString(ss.Sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig[0] ^= 1
+	bad.Sig = hex.EncodeToString(sig)
 	if _, err := VerifySnapshot(bad, ss.Pub); err == nil {
 		t.Fatal("tampered signature verified")
 	}
