@@ -17,5 +17,7 @@
 //     limiting, priced tools, the prepaid ledger, and bisonbotkit glue.
 //   - bridge is the client bridge: local MCP endpoints that mirror remote
 //     bots' tools and settle payments under the user's spending policy.
+//   - brclient hosts the bridge on an embedded Bison Relay client.
+//   - botkit is the PM sender and tip payer for clientrpc bots.
 //   - brmcptest is an in-memory PM fabric for tests and examples.
 package brmcp

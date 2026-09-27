@@ -70,6 +70,10 @@ flowchart LR
   (crawled catalogs, provider-funded live tests, signed snapshots,
   verify-don't-trust federation) plus the provider-side Registrant. See
   docs/DIRECTORY.md.
+- `brclient/` - hosts the bridge on an embedded Bison Relay client
+  (`github.com/companyzero/bisonrelay/client`).
+- `botkit/` - the PM sender and tip payer for bots that reach their client
+  over clientrpc, such as bisonbotkit bots.
 - `brmcptest/` - an in-memory PM fabric for testing endpoints without a
   relay.
 - `cmd/brmcp-serve` - a runnable example service with a free tool and a paid
@@ -119,7 +123,8 @@ daemon embeds to expose a local streamable-HTTP MCP endpoint per bot
 (`/mcp/<bot-uid>`) that agents such as Claude Code connect to. The bridge
 relays the session over Bison Relay and pays for tools by tip under
 user-configured caps, either unattended or after per-payment approval.
-brclientd is the reference host; embedding it in another daemon takes a PM
+A daemon that embeds the Bison Relay client attaches it with one call to
+`brclient.Attach`; brclientd is the reference host. Other hosts supply a PM
 sender, a PM feed, and a payment hook - see docs/BRIDGE.md.
 
 ## Finding tools

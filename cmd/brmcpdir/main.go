@@ -37,6 +37,7 @@ import (
 	kitconfig "github.com/vctt94/bisonbotkit/config"
 
 	"github.com/karamble/brmcp"
+	"github.com/karamble/brmcp/botkit"
 	"github.com/karamble/brmcp/bridge"
 	"github.com/karamble/brmcp/directory"
 	"github.com/karamble/brmcp/server"
@@ -71,7 +72,7 @@ func loadPolicy(path string) (directory.Policy, error) {
 // Payer, and Introducer. The bot is swapped on reconnect, so the pointer
 // is guarded.
 type backend struct {
-	matcher *bridge.TipMatcher
+	payer *bridge.TipPayer
 
 	mu   sync.Mutex
 	bot  *kit.Bot
@@ -111,33 +112,18 @@ func (b *backend) SendPM(ctx context.Context, peer, text string) error {
 	return bot.SendPM(ctx, peer, text)
 }
 
-// Pay settles one payment as a Bison Relay tip and blocks on the matching
-// terminal tip-progress event.
-func (b *backend) Pay(ctx context.Context, payeeUID string, atoms int64) error {
+// PayTip implements botkit.Bot.
+func (b *backend) PayTip(ctx context.Context, uid zkidentity.ShortID, amt dcrutil.Amount, maxAttempts int32) error {
 	bot := b.current()
 	if bot == nil {
 		return errors.New("brmcpdir: bot not connected")
 	}
-	var sid zkidentity.ShortID
-	if err := sid.FromString(payeeUID); err != nil {
-		return fmt.Errorf("payee uid: %w", err)
-	}
-	w := b.matcher.Expect(payeeUID, atoms*matomsPerAtom)
-	if err := bot.PayTip(ctx, sid, dcrutil.Amount(atoms), 3); err != nil {
-		w.Cancel()
-		return fmt.Errorf("tip: %w", err)
-	}
-	select {
-	case err := <-w.Done():
-		if err != nil {
-			return fmt.Errorf("tip failed: %w", err)
-		}
-		return nil
-	case <-ctx.Done():
-		w.Cancel()
-		return errors.New("tip not confirmed in time; the attempt keeps " +
-			"running in the background and still credits the payee")
-	}
+	return bot.PayTip(ctx, uid, amt, maxAttempts)
+}
+
+// Pay settles one payment as a Bison Relay tip.
+func (b *backend) Pay(ctx context.Context, payeeUID string, atoms int64) error {
+	return b.payer.Pay(ctx, payeeUID, atoms)
 }
 
 // Introduce requests a transitive KX with target through mediator.
@@ -281,7 +267,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	be := &backend{matcher: bridge.NewTipMatcher()}
+	be := &backend{}
+	be.payer = botkit.NewTipPayer(be)
 
 	// Introductions ride brclientd's status server; without it (stock
 	// brclient) the introduce tool reports itself unsupported.
@@ -397,13 +384,7 @@ func main() {
 				if ev == nil {
 					continue
 				}
-				if ev.Completed || !ev.WillRetry {
-					var res error
-					if !ev.Completed {
-						res = errors.New(ev.AttemptErr)
-					}
-					be.matcher.Resolve(hex.EncodeToString(ev.Uid), ev.AmountMatoms, res)
-				}
+				botkit.HandleTipProgress(be.payer, ev)
 				if bot := be.current(); bot != nil {
 					if err := bot.AckTipProgress(ctx, ev.SequenceId); err != nil {
 						log.Printf("ack tip progress %d: %v", ev.SequenceId, err)

@@ -19,18 +19,15 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync"
 	"syscall"
 
 	"github.com/companyzero/bisonrelay/clientrpc/types"
-	"github.com/companyzero/bisonrelay/zkidentity"
 	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	kit "github.com/vctt94/bisonbotkit"
 	kitconfig "github.com/vctt94/bisonbotkit/config"
 
 	"github.com/karamble/brmcp"
-	"github.com/karamble/brmcp/bridge"
+	"github.com/karamble/brmcp/botkit"
 	"github.com/karamble/brmcp/directory"
 	"github.com/karamble/brmcp/server"
 )
@@ -147,10 +144,13 @@ func main() {
 	// pays listing costs under the auto-fund policy.
 	var hooks server.RunBotHooks
 	if cfg.Directory != nil {
-		payer := &tipPayer{matcher: bridge.NewTipMatcher()}
+		bot := &botkit.LateBot{}
+		payer := botkit.NewTipPayer(bot)
 		hooks = server.RunBotHooks{
-			OnBot:         payer.set,
-			OnTipProgress: payer.progress,
+			OnBot: bot.Set,
+			OnTipProgress: func(ev *types.TipProgressEvent) {
+				botkit.HandleTipProgress(payer, ev)
+			},
 			OnRouter: func(router *brmcp.Router) {
 				reg, err := directory.NewRegistrant(directory.RegistrantConfig{
 					Description: cfg.Directory.Description,
@@ -180,59 +180,5 @@ func main() {
 	}
 	if err := server.RunBotHooked(ctx, h, botCfg, hooks); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
-	}
-}
-
-// tipPayer settles Registrant payments as Bison Relay tips, resolved by
-// the matching terminal tip-progress events.
-type tipPayer struct {
-	matcher *bridge.TipMatcher
-
-	mu  sync.Mutex
-	bot *kit.Bot
-}
-
-func (p *tipPayer) set(bot *kit.Bot) {
-	p.mu.Lock()
-	p.bot = bot
-	p.mu.Unlock()
-}
-
-func (p *tipPayer) progress(ev *types.TipProgressEvent) {
-	if ev.Completed || !ev.WillRetry {
-		var res error
-		if !ev.Completed {
-			res = errors.New(ev.AttemptErr)
-		}
-		p.matcher.Resolve(fmt.Sprintf("%x", ev.Uid), ev.AmountMatoms, res)
-	}
-}
-
-func (p *tipPayer) Pay(ctx context.Context, payeeUID string, atoms int64) error {
-	p.mu.Lock()
-	bot := p.bot
-	p.mu.Unlock()
-	if bot == nil {
-		return errors.New("bot not connected")
-	}
-	var sid zkidentity.ShortID
-	if err := sid.FromString(payeeUID); err != nil {
-		return fmt.Errorf("payee uid: %w", err)
-	}
-	w := p.matcher.Expect(payeeUID, atoms*1000)
-	if err := bot.PayTip(ctx, sid, dcrutil.Amount(atoms), 3); err != nil {
-		w.Cancel()
-		return fmt.Errorf("tip: %w", err)
-	}
-	select {
-	case err := <-w.Done():
-		if err != nil {
-			return fmt.Errorf("tip failed: %w", err)
-		}
-		return nil
-	case <-ctx.Done():
-		w.Cancel()
-		return errors.New("tip not confirmed in time; the attempt keeps " +
-			"running in the background and still credits the payee")
 	}
 }
